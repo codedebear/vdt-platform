@@ -109,6 +109,14 @@ if [ -n "$GEN_OUT" ] && [ "$GEN_OUT" != "None" ]; then
 else
   printf 'FAIL  %-46s (output was empty)\n' "  -> non-empty AI output"; FAIL=$((FAIL + 1))
 fi
+# sub-phase 3.5: token accounting + generation counter persisted on the run
+IN_TOK="$(jget "['inputTokens']")"
+if [ -n "$IN_TOK" ] && [ "$IN_TOK" != "None" ] && [ "$IN_TOK" != "null" ]; then
+  printf 'PASS  %-46s (in=%s out=%s)\n' "  -> token usage stored" "$IN_TOK" "$(jget "['outputTokens']")"; PASS=$((PASS + 1))
+else
+  printf 'FAIL  %-46s (inputTokens missing)\n' "  -> token usage stored"; FAIL=$((FAIL + 1))
+fi
+check "  -> generationCount == 1" "1" "$(jget "['generationCount']")"
 
 echo
 echo "-- status guard after approval (no Claude call) --"
