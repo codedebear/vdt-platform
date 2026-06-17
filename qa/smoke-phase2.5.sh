@@ -21,8 +21,13 @@ set -uo pipefail
 BASE="${BASE:-http://localhost:4000}"
 PASSWORD="${PASSWORD:-changeme123}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BACKEND_DIR="${BACKEND_DIR:-$SCRIPT_DIR/../backend}"
+REPO_DIR="${REPO_DIR:-$SCRIPT_DIR/..}"          # dir containing docker-compose.yml
 SEED_SQL="$SCRIPT_DIR/seed-roles.sql"
+# How to run the role-promotion SQL:
+#   docker (default) -> via the running container (works on the Pi)
+#   host             -> via host npx/prisma (needs backend/node_modules locally)
+SEED_MODE="${SEED_MODE:-docker}"
+COMPOSE_SVC="${COMPOSE_SVC:-backend}"
 
 PASS=0
 FAIL=0
@@ -79,11 +84,22 @@ register qa@codedebear.com     "QA Engineer"
 register op@codedebear.com     "Operations"
 echo "registered role users (idempotent)"
 
-# --- 2. Promote roles via Prisma ---
-if ( cd "$BACKEND_DIR" && npx prisma db execute --file "$SEED_SQL" --schema prisma/schema.prisma ) ; then
-  echo "promoted roles via seed-roles.sql"
+# --- 2. Promote roles via Prisma (db execute reads SQL from stdin) ---
+seed_ok=false
+if [ "$SEED_MODE" = "docker" ]; then
+  if ( cd "$REPO_DIR" && docker compose exec -T "$COMPOSE_SVC" \
+        npx prisma db execute --stdin --schema prisma/schema.prisma < "$SEED_SQL" ) ; then
+    seed_ok=true
+  fi
 else
-  echo "FAIL  could not run seed-roles.sql (need backend deps + DATABASE_URL)"; exit 1
+  if ( cd "$REPO_DIR/backend" && npx prisma db execute --stdin --schema prisma/schema.prisma < "$SEED_SQL" ) ; then
+    seed_ok=true
+  fi
+fi
+if [ "$seed_ok" = true ]; then
+  echo "promoted roles via seed-roles.sql (mode: $SEED_MODE)"
+else
+  echo "FAIL  could not run seed-roles.sql (mode: $SEED_MODE)"; exit 1
 fi
 echo
 
