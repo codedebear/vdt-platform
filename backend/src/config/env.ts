@@ -13,6 +13,12 @@ const envSchema = z.object({
   JWT_EXPIRES_IN: z.string().default('8h'),
   PORT: z.string().default('4000'),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  // AI generation (Anthropic). Optional so the app still boots without it; the
+  // generation service returns a clear 503 if a generate call is attempted while
+  // the key is unset.
+  ANTHROPIC_API_KEY: z.string().optional(),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
+  ANTHROPIC_MAX_TOKENS: z.coerce.number().int().positive().default(8000),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -30,4 +36,7 @@ export const env = {
   jwtExpiresIn: parsed.data.JWT_EXPIRES_IN,
   port: Number(parsed.data.PORT),
   nodeEnv: parsed.data.NODE_ENV,
+  anthropicApiKey: parsed.data.ANTHROPIC_API_KEY,
+  anthropicModel: parsed.data.ANTHROPIC_MODEL,
+  anthropicMaxTokens: parsed.data.ANTHROPIC_MAX_TOKENS,
 };

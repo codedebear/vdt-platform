@@ -21,6 +21,8 @@ import {
   Track,
 } from '../domain/workflow';
 import { can, Role } from '../domain/permissions';
+import { buildPrompt, PriorOutput } from '../domain/prompts';
+import { generateText, GenerationClient } from './generation.service';
 
 /** The authenticated user performing an action. */
 export interface Actor {
@@ -157,5 +159,70 @@ export async function reviewPhase(
       reviewNote: note,
       completedAt: nextStatus === 'APPROVED' ? new Date() : null,
     },
+  });
+}
+
+/**
+ * Generates this run's output with the Claude API instead of receiving it
+ * manually, then moves the run to AWAITING_REVIEW. The prompt is built from the
+ * project context plus the approved outputs of earlier phases. Permitted for the
+ * phase's worker role while the run is IN_PROGRESS or CHANGES_REQUESTED.
+ * @param client - Optional injected generation client (used by tests).
+ * @throws {AppError} 404 if missing, 403 if the role may not produce this phase,
+ *   409 on an invalid status, 502/503 on generation failure.
+ */
+export async function generatePhaseOutput(
+  executionId: string,
+  actor: Actor,
+  client?: GenerationClient,
+) {
+  const execution = await prisma.phaseExecution.findUnique({
+    where: { id: executionId },
+    include: {
+      project: {
+        include: {
+          executions: {
+            where: { status: 'APPROVED', output: { not: null } },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      },
+    },
+  });
+  if (!execution) {
+    throw new AppError('Phase execution not found', 404);
+  }
+
+  const phaseType = execution.phaseType as PhaseType;
+  if (!can(actor.role, 'PHASE_SUBMIT', { phaseType })) {
+    throw new AppError(`Your role is not allowed to produce a ${phaseType} phase`, 403);
+  }
+
+  if (execution.status !== 'IN_PROGRESS' && execution.status !== 'CHANGES_REQUESTED') {
+    throw new AppError(
+      `Generation is only allowed while a run is IN_PROGRESS or CHANGES_REQUESTED (current: ${execution.status})`,
+      409,
+    );
+  }
+
+  const priorOutputs: PriorOutput[] = execution.project.executions.map((e) => ({
+    phaseType: e.phaseType as PhaseType,
+    output: e.output as string,
+  }));
+
+  const { system, user } = buildPrompt({
+    projectName: execution.project.name,
+    description: execution.project.description ?? undefined,
+    track: execution.project.track as Track,
+    phaseType,
+    priorOutputs,
+    input: execution.input ?? undefined,
+  });
+
+  const output = await generateText(system, user, client);
+
+  return prisma.phaseExecution.update({
+    where: { id: executionId },
+    data: { output, status: 'AWAITING_REVIEW' },
   });
 }

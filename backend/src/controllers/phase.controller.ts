@@ -74,6 +74,26 @@ export async function submitOutput(
   }
 }
 
+/** POST /api/phases/:executionId/generate — generate this run's output via Claude. */
+export async function generatePhase(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const execution = await phaseService.generatePhaseOutput(req.params.executionId, {
+      id: req.user.id,
+      role: req.user.role,
+    });
+    res.status(200).json(execution);
+  } catch (err) {
+    next(err);
+  }
+}
+
 /** POST /api/phases/:executionId/review — approve or request changes on a run. */
 export async function reviewPhase(
   req: Request,
