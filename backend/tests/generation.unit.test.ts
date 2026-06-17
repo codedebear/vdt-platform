@@ -2,44 +2,62 @@
  * Unit tests for the low-level generation service, using an injected fake client
  * so no real Anthropic SDK or network call is made.
  */
-import { generateText, GenerationClient } from '../src/services/generation.service';
+import {
+  generateText,
+  GenerationClient,
+  GenerationResponse,
+} from '../src/services/generation.service';
 import { AppError } from '../src/middleware/errorHandler';
 
-/** Builds a fake client whose messages.create returns the given content blocks. */
+/** Builds a fake client whose messages.create returns the given response. */
 function fakeClient(
-  content: Array<{ type: string; text?: string }>,
+  response: GenerationResponse,
   capture?: (args: unknown) => void,
 ): GenerationClient {
   return {
     messages: {
       create: async (args) => {
         capture?.(args);
-        return { content };
+        return response;
       },
     },
   };
 }
 
 describe('generateText', () => {
-  it('concatenates text blocks from the response', async () => {
-    const client = fakeClient([
-      { type: 'text', text: 'Hello' },
-      { type: 'text', text: 'World' },
-    ]);
-    await expect(generateText('sys', 'user', client)).resolves.toBe('Hello\nWorld');
+  it('concatenates text blocks and returns token usage', async () => {
+    const client = fakeClient({
+      content: [
+        { type: 'text', text: 'Hello' },
+        { type: 'text', text: 'World' },
+      ],
+      usage: { input_tokens: 12, output_tokens: 34 },
+    });
+    await expect(generateText('sys', 'user', client)).resolves.toEqual({
+      text: 'Hello\nWorld',
+      inputTokens: 12,
+      outputTokens: 34,
+    });
+  });
+
+  it('returns null token counts when usage is absent', async () => {
+    const client = fakeClient({ content: [{ type: 'text', text: 'ok' }] });
+    const result = await generateText('s', 'u', client);
+    expect(result.text).toBe('ok');
+    expect(result.inputTokens).toBeNull();
+    expect(result.outputTokens).toBeNull();
   });
 
   it('ignores non-text blocks', async () => {
-    const client = fakeClient([
-      { type: 'tool_use' },
-      { type: 'text', text: 'Only this' },
-    ]);
-    await expect(generateText('sys', 'user', client)).resolves.toBe('Only this');
+    const client = fakeClient({
+      content: [{ type: 'tool_use' }, { type: 'text', text: 'Only this' }],
+    });
+    await expect((await generateText('s', 'u', client)).text).toBe('Only this');
   });
 
   it('passes system + user prompt through to the client', async () => {
     let seen: { system?: string; messages?: { content: string }[] } = {};
-    const client = fakeClient([{ type: 'text', text: 'ok' }], (args) => {
+    const client = fakeClient({ content: [{ type: 'text', text: 'ok' }] }, (args) => {
       seen = args as typeof seen;
     });
     await generateText('SYSTEM-PROMPT', 'USER-PROMPT', client);
@@ -48,7 +66,7 @@ describe('generateText', () => {
   });
 
   it('throws 502 when the response has no text', async () => {
-    const client = fakeClient([{ type: 'tool_use' }]);
+    const client = fakeClient({ content: [{ type: 'tool_use' }] });
     await expect(generateText('s', 'u', client)).rejects.toMatchObject({ statusCode: 502 });
   });
 

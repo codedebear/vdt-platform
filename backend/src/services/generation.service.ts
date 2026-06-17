@@ -10,6 +10,12 @@
 import { env } from '../config/env';
 import { AppError } from '../middleware/errorHandler';
 
+/** The slice of the Anthropic message response this service reads. */
+export interface GenerationResponse {
+  content: Array<{ type: string; text?: string }>;
+  usage?: { input_tokens?: number; output_tokens?: number };
+}
+
 /** The slice of the Anthropic client this service depends on. */
 export interface GenerationClient {
   messages: {
@@ -18,14 +24,22 @@ export interface GenerationClient {
       max_tokens: number;
       system: string;
       messages: { role: 'user'; content: string }[];
-    }): Promise<{ content: Array<{ type: string; text?: string }> }>;
+    }): Promise<GenerationResponse>;
   };
+}
+
+/** Result of a generation: the text plus token accounting. */
+export interface GenerationResult {
+  text: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
 }
 
 let cachedClient: GenerationClient | null = null;
 
 /**
- * Lazily constructs (and caches) the real Anthropic client.
+ * Lazily constructs (and caches) the real Anthropic client, configured with a
+ * request timeout and retry budget from env.
  * @throws {AppError} 503 if ANTHROPIC_API_KEY is not configured.
  */
 async function getDefaultClient(): Promise<GenerationClient> {
@@ -40,29 +54,36 @@ async function getDefaultClient(): Promise<GenerationClient> {
   // without it installed; it is resolved here only when a real generate runs.
   const sdkModule = '@anthropic-ai/sdk';
   const { default: Anthropic } = (await import(sdkModule)) as {
-    default: new (opts: { apiKey: string }) => GenerationClient;
+    default: new (opts: {
+      apiKey: string;
+      timeout?: number;
+      maxRetries?: number;
+    }) => GenerationClient;
   };
-  cachedClient = new Anthropic({ apiKey: env.anthropicApiKey });
+  cachedClient = new Anthropic({
+    apiKey: env.anthropicApiKey,
+    timeout: env.anthropicTimeoutMs,
+    maxRetries: env.anthropicMaxRetries,
+  });
   return cachedClient;
 }
 
 /**
- * Sends a system + user prompt to Claude and returns the concatenated text.
+ * Sends a system + user prompt to Claude and returns the text plus token usage.
  * @param system - The system prompt fixing the agent role.
  * @param user - The user prompt carrying project context.
  * @param client - Optional injected client (used by tests); falls back to the
  *   real Anthropic client built from env.
- * @returns The generated Markdown text.
  * @throws {AppError} 503 if unconfigured, 502 if the API returns no text or errors.
  */
 export async function generateText(
   system: string,
   user: string,
   client?: GenerationClient,
-): Promise<string> {
+): Promise<GenerationResult> {
   const c = client ?? (await getDefaultClient());
 
-  let response: { content: Array<{ type: string; text?: string }> };
+  let response: GenerationResponse;
   try {
     response = await c.messages.create({
       model: env.anthropicModel,
@@ -71,7 +92,11 @@ export async function generateText(
       messages: [{ role: 'user', content: user }],
     });
   } catch (err) {
-    throw new AppError(`AI generation failed: ${(err as Error).message}`, 502);
+    // Log the raw upstream error server-side; return a generic message so
+    // internal details are not leaked to the client.
+    // eslint-disable-next-line no-console
+    console.error('Anthropic generation error:', err);
+    throw new AppError('AI generation request failed upstream', 502);
   }
 
   const text = response.content
@@ -83,5 +108,10 @@ export async function generateText(
   if (!text) {
     throw new AppError('AI generation returned an empty response', 502);
   }
-  return text;
+
+  return {
+    text,
+    inputTokens: response.usage?.input_tokens ?? null,
+    outputTokens: response.usage?.output_tokens ?? null,
+  };
 }

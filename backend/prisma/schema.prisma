@@ -65,6 +65,11 @@ model PhaseExecution {
   input       String?
   output      String?
   reviewNote  String?
+  // AI generation accounting (sub-phase 3.5). Nullable token counts from the
+  // last generation; generationCount caps repeated regenerations per run.
+  inputTokens     Int?
+  outputTokens    Int?
+  generationCount Int      @default(0)
   startedAt   DateTime    @default(now())
   completedAt DateTime?
   createdAt   DateTime    @default(now())

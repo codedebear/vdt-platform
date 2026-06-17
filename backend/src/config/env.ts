@@ -19,6 +19,11 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-6'),
   ANTHROPIC_MAX_TOKENS: z.coerce.number().int().positive().default(8000),
+  ANTHROPIC_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
+  ANTHROPIC_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
+  // Cost/abuse guards for the paid /generate endpoint.
+  GENERATE_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(10),
+  GENERATE_MAX_PER_RUN: z.coerce.number().int().positive().default(5),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -39,4 +44,8 @@ export const env = {
   anthropicApiKey: parsed.data.ANTHROPIC_API_KEY,
   anthropicModel: parsed.data.ANTHROPIC_MODEL,
   anthropicMaxTokens: parsed.data.ANTHROPIC_MAX_TOKENS,
+  anthropicTimeoutMs: parsed.data.ANTHROPIC_TIMEOUT_MS,
+  anthropicMaxRetries: parsed.data.ANTHROPIC_MAX_RETRIES,
+  generateRateLimitPerMin: parsed.data.GENERATE_RATE_LIMIT_PER_MIN,
+  generateMaxPerRun: parsed.data.GENERATE_MAX_PER_RUN,
 };

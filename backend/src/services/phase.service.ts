@@ -9,6 +9,7 @@
  */
 import { Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma';
+import { env } from '../config/env';
 import { AppError } from '../middleware/errorHandler';
 import {
   canStartPhase,
@@ -205,6 +206,14 @@ export async function generatePhaseOutput(
     );
   }
 
+  // Cost guard: cap how many times a single run may be (re)generated.
+  if (execution.generationCount >= env.generateMaxPerRun) {
+    throw new AppError(
+      `This run has reached its generation limit (${env.generateMaxPerRun}); submit or have it reviewed instead`,
+      429,
+    );
+  }
+
   const priorOutputs: PriorOutput[] = execution.project.executions.map((e) => ({
     phaseType: e.phaseType as PhaseType,
     output: e.output as string,
@@ -219,10 +228,16 @@ export async function generatePhaseOutput(
     input: execution.input ?? undefined,
   });
 
-  const output = await generateText(system, user, client);
+  const result = await generateText(system, user, client);
 
   return prisma.phaseExecution.update({
     where: { id: executionId },
-    data: { output, status: 'AWAITING_REVIEW' },
+    data: {
+      output: result.text,
+      status: 'AWAITING_REVIEW',
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      generationCount: { increment: 1 },
+    },
   });
 }
