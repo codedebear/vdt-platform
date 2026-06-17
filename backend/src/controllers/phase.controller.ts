@@ -29,8 +29,16 @@ export async function startPhase(
   next: NextFunction,
 ): Promise<void> {
   try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
     const { phaseType, input } = startPhaseSchema.parse(req.body);
-    const execution = await phaseService.startPhase(req.params.id, phaseType, input);
+    const execution = await phaseService.startPhase(
+      req.params.id,
+      phaseType,
+      { id: req.user.id, role: req.user.role },
+      input,
+    );
     res.status(201).json(execution);
   } catch (err) {
     if (err instanceof z.ZodError) {
@@ -48,8 +56,14 @@ export async function submitOutput(
   next: NextFunction,
 ): Promise<void> {
   try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
     const { output } = submitOutputSchema.parse(req.body);
-    const execution = await phaseService.submitPhaseOutput(req.params.executionId, output);
+    const execution = await phaseService.submitPhaseOutput(req.params.executionId, output, {
+      id: req.user.id,
+      role: req.user.role,
+    });
     res.status(200).json(execution);
   } catch (err) {
     if (err instanceof z.ZodError) {
@@ -67,8 +81,16 @@ export async function reviewPhase(
   next: NextFunction,
 ): Promise<void> {
   try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
     const { action, note } = reviewSchema.parse(req.body);
-    const execution = await phaseService.reviewPhase(req.params.executionId, action, note);
+    const execution = await phaseService.reviewPhase(
+      req.params.executionId,
+      action,
+      { id: req.user.id, role: req.user.role },
+      note,
+    );
     res.status(200).json(execution);
   } catch (err) {
     if (err instanceof z.ZodError) {

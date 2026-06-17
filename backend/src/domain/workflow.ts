@@ -50,6 +50,22 @@ export interface ExecutionSummary {
   runNumber: number;
 }
 
+/**
+ * Maps persisted phase-execution rows to the minimal {@link ExecutionSummary}
+ * shape the engine needs. Prisma's enum values are identical strings to this
+ * module's unions, so the cast is safe. Centralized here so the service layer
+ * does not duplicate the mapping.
+ */
+export function toExecutionSummaries(
+  executions: { phaseType: string; status: string; runNumber: number }[],
+): ExecutionSummary[] {
+  return executions.map((e) => ({
+    phaseType: e.phaseType as PhaseType,
+    status: e.status as PhaseStatus,
+    runNumber: e.runNumber,
+  }));
+}
+
 /** Result of evaluating whether a phase run may be started. */
 export interface StartDecision {
   allowed: boolean;

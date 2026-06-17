@@ -16,10 +16,10 @@ describe('auth.service', () => {
   });
 
   it('generates a token that verifies back to the same payload', () => {
-    const token = generateToken({ sub: 'user-1', email: 'test@example.com', role: 'MEMBER' });
+    const token = generateToken({ sub: 'user-1', email: 'test@example.com', role: 'OPERATION' });
     const decoded = verifyToken(token);
     expect(decoded.sub).toBe('user-1');
     expect(decoded.email).toBe('test@example.com');
-    expect(decoded.role).toBe('MEMBER');
+    expect(decoded.role).toBe('OPERATION');
   });
 });

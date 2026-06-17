@@ -1,4 +1,5 @@
 import 'express';
+import type { Role } from '../domain/permissions';
 
 declare global {
   namespace Express {
@@ -7,7 +8,7 @@ declare global {
       user?: {
         id: string;
         email: string;
-        role: 'ADMIN' | 'MEMBER';
+        role: Role;
       };
     }
   }

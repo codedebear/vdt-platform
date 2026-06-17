@@ -13,16 +13,25 @@ model User {
   email        String    @unique
   passwordHash String
   name         String
-  role         Role      @default(MEMBER)
+  role         Role      @default(OPERATION)
   projects     Project[]
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 }
 
-/// Authorization role assigned to a user.
+/// Global authorization role assigned to a user. Determines which workflow
+/// actions the user may perform across all projects (role is not scoped per
+/// project in this phase). SUPER_ADMIN may do everything; PROJECT_OWNER creates
+/// projects and reviews/approves phases on projects they own; BA/SA/QA/OPERATION
+/// are the "worker" roles that run specific phase types. The single source of
+/// truth for what each role may do is domain/permissions.ts.
 enum Role {
-  ADMIN
-  MEMBER
+  SUPER_ADMIN
+  PROJECT_OWNER
+  BA
+  SA
+  QA
+  OPERATION
 }
 
 /// A software project managed by the platform. Its `track` decides which

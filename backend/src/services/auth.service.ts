@@ -4,13 +4,14 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
+import { Role } from '../domain/permissions';
 
 const SALT_ROUNDS = 12;
 
 export interface JwtPayload {
   sub: string;
   email: string;
-  role: 'ADMIN' | 'MEMBER';
+  role: Role;
 }
 
 /**

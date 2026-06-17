@@ -4,33 +4,13 @@
  */
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/errorHandler';
-import {
-  getNextPhase,
-  ExecutionSummary,
-  PhaseStatus,
-  PhaseType,
-  Track,
-} from '../domain/workflow';
+import { getNextPhase, toExecutionSummaries, Track } from '../domain/workflow';
 
 /** Fields accepted when creating a project. */
 export interface CreateProjectInput {
   name: string;
   description?: string;
   track: Track;
-}
-
-/**
- * Maps persisted phase executions to the minimal shape the workflow engine
- * needs. Prisma's enum values are identical strings to the engine's unions.
- */
-function toSummaries(
-  executions: { phaseType: string; status: string; runNumber: number }[],
-): ExecutionSummary[] {
-  return executions.map((e) => ({
-    phaseType: e.phaseType as PhaseType,
-    status: e.status as PhaseStatus,
-    runNumber: e.runNumber,
-  }));
 }
 
 /** Creates a new project owned by the given user. */
@@ -71,6 +51,9 @@ export async function getProjectOrThrow(projectId: string) {
 /** Loads a project and annotates it with the next phase the engine suggests. */
 export async function getProjectWithNextPhase(projectId: string) {
   const project = await getProjectOrThrow(projectId);
-  const nextPhase = getNextPhase(project.track as Track, toSummaries(project.executions));
+  const nextPhase = getNextPhase(
+    project.track as Track,
+    toExecutionSummaries(project.executions),
+  );
   return { ...project, nextPhase };
 }
