@@ -9,17 +9,89 @@ datasource db {
 
 /// A user account that can sign in to the VDT Platform.
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
+  id           String    @id @default(uuid())
+  email        String    @unique
   passwordHash String
   name         String
-  role         Role     @default(MEMBER)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  role         Role      @default(MEMBER)
+  projects     Project[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 }
 
 /// Authorization role assigned to a user.
 enum Role {
   ADMIN
   MEMBER
+}
+
+/// A software project managed by the platform. Its `track` decides which
+/// phases apply: FULL_SDLC runs the full Planner→Dev→QA→Review→Docs flow,
+/// while QA_ONLY runs a lightweight Planner (test scope) followed by
+/// repeatable QA cycles for clients who already have code.
+model Project {
+  id          String           @id @default(uuid())
+  name        String
+  description String?
+  track       Track            @default(FULL_SDLC)
+  status      ProjectStatus    @default(ACTIVE)
+  owner       User             @relation(fields: [ownerId], references: [id])
+  ownerId     String
+  executions  PhaseExecution[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+}
+
+/// One run of a single phase for a project. A phase type may have many runs
+/// (e.g. repeatable QA cycles, or a re-run after CHANGES_REQUESTED), so history
+/// is preserved as separate rows rather than overwritten. `runNumber` is a
+/// 1-based counter scoped to (project, phaseType).
+model PhaseExecution {
+  id          String      @id @default(uuid())
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId   String
+  phaseType   PhaseType
+  runNumber   Int
+  status      PhaseStatus @default(IN_PROGRESS)
+  input       String?
+  output      String?
+  reviewNote  String?
+  startedAt   DateTime    @default(now())
+  completedAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([projectId, phaseType, runNumber])
+  @@index([projectId, phaseType])
+}
+
+/// The workflow track a project follows.
+enum Track {
+  FULL_SDLC
+  QA_ONLY
+}
+
+/// High-level lifecycle status of a project.
+enum ProjectStatus {
+  ACTIVE
+  COMPLETED
+  ARCHIVED
+}
+
+/// The kind of work a phase execution represents.
+enum PhaseType {
+  PLANNER
+  DEV
+  QA
+  CODE_REVIEW
+  DOCS
+}
+
+/// Lifecycle status of a single phase execution (one run).
+enum PhaseStatus {
+  IN_PROGRESS
+  AWAITING_REVIEW
+  APPROVED
+  CHANGES_REQUESTED
+  FAILED
 }
