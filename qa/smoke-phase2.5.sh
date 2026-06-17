@@ -24,10 +24,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${REPO_DIR:-$SCRIPT_DIR/..}"          # dir containing docker-compose.yml
 SEED_SQL="$SCRIPT_DIR/seed-roles.sql"
 # How to run the role-promotion SQL:
-#   docker (default) -> via the running container (works on the Pi)
-#   host             -> via host npx/prisma (needs backend/node_modules locally)
-SEED_MODE="${SEED_MODE:-docker}"
+#   auto (default) -> use docker if available, else host prisma
+#   docker         -> via the running container (on the Pi)
+#   host           -> via host npx/prisma, straight to Neon using DATABASE_URL
+SEED_MODE="${SEED_MODE:-auto}"
 COMPOSE_SVC="${COMPOSE_SVC:-backend}"
+# DATABASE_URL is needed for host-mode seeding; load it from the repo-root .env
+# if the caller did not already export it.
+if [ -z "${DATABASE_URL:-}" ] && [ -f "$REPO_DIR/.env" ]; then
+  DATABASE_URL="$(grep -E '^DATABASE_URL=' "$REPO_DIR/.env" | head -1 | cut -d= -f2-)"
+fi
+if [ "$SEED_MODE" = "auto" ]; then
+  if command -v docker >/dev/null 2>&1; then SEED_MODE="docker"; else SEED_MODE="host"; fi
+fi
 
 PASS=0
 FAIL=0
@@ -92,7 +101,10 @@ if [ "$SEED_MODE" = "docker" ]; then
     seed_ok=true
   fi
 else
-  if ( cd "$REPO_DIR/backend" && npx prisma db execute --stdin --schema prisma/schema.prisma < "$SEED_SQL" ) ; then
+  if [ -z "${DATABASE_URL:-}" ]; then
+    echo "FAIL  host seed mode needs DATABASE_URL (not found in env or $REPO_DIR/.env)"; exit 1
+  fi
+  if ( cd "$REPO_DIR/backend" && npx prisma db execute --stdin --url "$DATABASE_URL" < "$SEED_SQL" ) ; then
     seed_ok=true
   fi
 fi
