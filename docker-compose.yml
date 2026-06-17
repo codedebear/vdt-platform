@@ -15,5 +15,8 @@ services:
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN}
       PORT: ${PORT}
       NODE_ENV: ${NODE_ENV}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      ANTHROPIC_MAX_TOKENS: ${ANTHROPIC_MAX_TOKENS:-8000}
     ports:
       - "${PORT}:${PORT}"
