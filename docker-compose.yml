@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Database is Neon (managed serverless Postgres, external to this compose file).
 # No local "postgres" service — DATABASE_URL in .env must point at your Neon connection string.
 

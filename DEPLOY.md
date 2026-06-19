@@ -36,8 +36,14 @@ git pull origin main
 
 `.env` is **gitignored**, so it is NOT in the clone — you must create it on the Pi.
 
+> ⚠️ **Do this only if `.env` does not already exist.** Never run `cp .env.example .env`
+> over a working `.env` — it overwrites your real secrets with placeholders. The
+> example's `DATABASE_URL` contains `<...>` angle brackets, which Prisma rejects at
+> boot with `P1013: invalid domain character in database URL` and crash-loops the
+> backend. The safe command below refuses to clobber an existing file:
+
 ```bash
-cp .env.example .env
+[ -f .env ] && echo ".env already exists — leaving it untouched" || cp .env.example .env
 nano .env
 ```
 
@@ -143,6 +149,8 @@ docker compose logs --tail=100 backend
 
 | Symptom | Likely cause / fix |
 |---------|--------------------|
+| Backend `Restarting`, logs show Prisma `P1013: invalid domain character in database URL` | `DATABASE_URL` is malformed — usually the `.env` was overwritten by the placeholder (contains `<...>`), or the password has unescaped special chars. Restore the real Neon string and `docker compose up -d backend`. |
+| Frontend reachable but `/api`/`/health` return `502` | The backend container is down/crash-looping (nginx is fine). Check `docker compose ps` + `docker compose logs backend`; fix the backend, then re-run `./qa/smoke-frontend.sh`. |
 | Container exits immediately, logs show Prisma `P1001` | Can't reach Neon — check `DATABASE_URL` and that it ends with `?sslmode=require`; Neon may need a few seconds to wake from scale-to-zero. |
 | `JWT_SECRET must be at least 16 characters` on boot | `JWT_SECRET` in `.env` is too short. |
 | `port is already allocated` | Something else uses 4000 — change `PORT` in `.env` and rebuild. |
