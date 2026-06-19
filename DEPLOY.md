@@ -92,13 +92,20 @@ selected automatically.)
 ## 4. Verify the container is running
 
 ```bash
-docker ps
+docker compose ps                  # both backend AND frontend should be "Up"
 docker compose logs -f backend     # Ctrl+C to stop following
 ```
 
 Expect to see the server listening on port 4000 and no Prisma connection errors.
 
-Service available at: `http://localhost:4000`
+Services available at:
+- **App (SPA):** `http://localhost:8080` (or `http://<pi-lan-ip>:8080`) — port set by `FRONTEND_PORT`.
+- **API:** `http://localhost:4000`.
+
+`docker compose up --build -d` builds and runs **both** containers. The frontend
+(`nginx:alpine`) serves the built React app and proxies `/api` + `/health` to the
+`backend` container — so a `502` on those paths means the backend is down, not a
+frontend problem (see Troubleshooting).
 
 ---
 
@@ -130,6 +137,11 @@ curl -i -X POST http://localhost:4000/api/auth/login \
 curl -i -X POST http://localhost:4000/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email":"bad@x.com","password":"123","name":"x"}'
+```
+
+**e) Frontend smoke** — expect `13/13` (SPA routing, security headers, `/api`+`/health` proxy)
+```bash
+BASE_URL=http://localhost:8080 ./qa/smoke-frontend.sh
 ```
 
 ---

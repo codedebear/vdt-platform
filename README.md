@@ -15,8 +15,8 @@ code and just want independent, repeatable QA cycles with full run history.
 - **Backend:** Node.js 20 + TypeScript + Express, Prisma ORM, JWT auth.
 - **Database:** Neon (managed serverless Postgres) — external, not co-located with the app.
 - **AI:** Claude / Anthropic API (`@anthropic-ai/sdk`), default model `claude-sonnet-4-6`.
-- **Deploy:** Docker (`node:20-slim` base) on a Raspberry Pi.
-- **Frontend:** React + Vite — not yet built (API-only at this stage).
+- **Frontend:** React 18 + Vite + TypeScript + Tailwind SPA (`frontend/`), served by nginx.
+- **Deploy:** Docker Compose on a Raspberry Pi — a `backend` container (`node:20-slim`) and a `frontend` container (`nginx:alpine`) that serves the SPA and proxies `/api` to the backend.
 
 ## Prerequisites
 
@@ -30,12 +30,19 @@ code and just want independent, repeatable QA cycles with full run history.
 ```bash
 git clone https://github.com/codedebear/vdt-platform.git
 cd vdt-platform
-cp .env.example .env        # then edit .env (see Environment variables)
+cp .env.example .env        # FIRST TIME ONLY — see the warning below; then edit .env
 docker compose up --build -d
 ```
 
-The API is then available at `http://localhost:4000`. On first start the
-container runs `prisma db push` to sync the schema to Neon, then boots the API.
+> ⚠️ Only run `cp .env.example .env` when no `.env` exists yet. Running it over a
+> working `.env` overwrites your real secrets with placeholders (the example's
+> `DATABASE_URL` has `<...>` brackets, which Prisma rejects with `P1013` and
+> crash-loops the backend). On an existing host, edit `.env` in place instead.
+
+This builds and starts both containers. The **app (SPA)** is then available at
+`http://localhost:8080` and the **API** at `http://localhost:4000`. On first
+start the backend runs `prisma db push` to sync the schema to Neon, then boots;
+nginx serves the built frontend and proxies `/api` + `/health` to the backend.
 
 For local development without Docker:
 
@@ -66,6 +73,8 @@ gitignored — copy `.env.example` and fill it in.
 | `ANTHROPIC_MAX_RETRIES` | — | `2` | SDK retry budget on transient upstream errors. |
 | `GENERATE_RATE_LIMIT_PER_MIN` | — | `10` | Per-user rate limit on `/generate` (requests/minute). |
 | `GENERATE_MAX_PER_RUN` | — | `5` | Max (re)generations allowed for a single phase run before `429`. |
+| `FRONTEND_PORT` | — | `8080` | Host port the frontend (nginx) container is published on. |
+| `VITE_API_BASE_URL` | — | *(empty)* | API origin baked into the SPA at build time. Leave empty for same-origin (nginx proxies `/api`); set only if the API is on a different origin. |
 
 ## Concepts
 
@@ -299,6 +308,54 @@ the last super admin, `422` invalid role.
 #### `GET /health`
 Liveness probe (no auth). **Response:** `200 OK` `{ "status": "ok" }`.
 
+## Frontend
+
+A single-page app in `frontend/` — **React 18 + Vite + TypeScript (strict) +
+Tailwind CSS**. It calls the API over relative `/api` paths, so the same build
+works in dev (Vite dev-server proxy) and in production (nginx proxy) with no CORS.
+
+**Serving model**
+
+- **Dev:** `vite` dev server on `:5173` proxies `/api` + `/health` to the backend on `:4000`.
+- **Prod:** a multi-stage Docker build compiles the app to static assets, then
+  `nginx:alpine` serves them and proxies `/api` + `/health` to the `backend`
+  container (`BACKEND_ORIGIN`, default `http://backend:4000`). nginx also sends
+  SPA-fallback routing, long-cache immutable assets, and security headers
+  (`Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`,
+  `Referrer-Policy`).
+
+**Routes**
+
+| Path | Auth | Purpose |
+|------|------|---------|
+| `/login`, `/register` | public | Email/password auth (JWT stored client-side). |
+| `/projects` | required | List all projects. |
+| `/projects/new` | required | Create a project (name, description, track). Needs `PROJECT_CREATE`. |
+| `/projects/:id` | required | Project detail: phase-execution history + suggested next phase. |
+
+Unauthenticated access to a protected route redirects to `/login`; a `401` from
+the API auto-logs-out. New users register as `OPERATION`, which lacks
+`PROJECT_CREATE`, so "New project" returns a friendly `403` until a
+`SUPER_ADMIN` grants a suitable role.
+
+**Status:** auth + app shell + projects (list / create / detail) are implemented.
+Phase-execution screens (start a phase, AI-generate, review/approve) and the
+user-management UI are planned follow-ups.
+
+**Local development**
+
+```bash
+# backend must be running on :4000 first
+cd frontend
+npm install
+npm run dev                 # http://localhost:5173 (proxies /api to the backend)
+```
+
+```bash
+npm run build               # type-check + production build to frontend/dist/
+npm run typecheck           # tsc --noEmit only
+```
+
 ## Running tests
 
 ```bash
@@ -308,8 +365,11 @@ npm test                    # Jest unit + integration tests
 
 Pure-domain engines (`workflow`, `permissions`, `prompts`) and the generation
 service are unit-tested in isolation; `health` is covered with supertest.
-End-to-end smoke scripts live in `qa/` (`smoke-phase2.sh`, `smoke-phase2.5.sh`,
-`smoke-phase3.sh`, `smoke-phase4.sh`) and run against a deployed instance.
+End-to-end smoke scripts live in `qa/` and run against a deployed instance:
+`smoke-phase2.sh`, `smoke-phase2.5.sh`, `smoke-phase3.sh`, `smoke-phase4.sh`
+(backend), and `smoke-frontend.sh` (frontend container — SPA routing, security
+headers, and the `/api` + `/health` proxy path; run with
+`BASE_URL=http://localhost:8080 ./qa/smoke-frontend.sh`).
 
 ## Deployment
 
@@ -319,12 +379,15 @@ commands). In short:
 
 ```bash
 # on the Pi
-cd ~/vdt-platform && git pull origin main
-cp .env.example .env        # first time only; then edit
+cd ~/VDT_Platform/vdt-platform && git pull origin main
+# create .env ONLY if it doesn't exist yet (never clobber a working one):
+[ -f .env ] && echo ".env kept" || cp .env.example .env   # then edit
 docker compose up --build -d
-docker compose logs -f backend
+docker compose ps                       # backend + frontend should be Up
 ```
 
-Database schema changes are applied via `prisma db push` (run automatically in
-the container start, or manually for local dev). The Anthropic key and Neon
-credentials live only in `.env` on the host — never committed.
+This brings up both containers: the API on `:4000` and the SPA on
+`:8080` (`FRONTEND_PORT`). Database schema changes are applied via `prisma db
+push` (run automatically on backend start, or manually for local dev). The
+Anthropic key and Neon credentials live only in `.env` on the host — never
+committed.
