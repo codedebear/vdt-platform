@@ -22,5 +22,23 @@ services:
       ANTHROPIC_MAX_RETRIES: ${ANTHROPIC_MAX_RETRIES:-2}
       GENERATE_RATE_LIMIT_PER_MIN: ${GENERATE_RATE_LIMIT_PER_MIN:-10}
       GENERATE_MAX_PER_RUN: ${GENERATE_MAX_PER_RUN:-5}
+    expose:
+      - "${PORT}"
     ports:
       - "${PORT}:${PORT}"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Empty = same-origin; nginx proxies /api to the backend container.
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
+    restart: unless-stopped
+    environment:
+      # Where nginx forwards /api and /health (the backend service + its PORT).
+      BACKEND_ORIGIN: http://backend:${PORT}
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"

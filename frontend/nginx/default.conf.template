@@ -1,0 +1,53 @@
+# nginx config rendered at container start by the official entrypoint, which
+# runs envsubst over this template (only ${BACKEND_ORIGIN} is substituted —
+# nginx runtime vars like $host/$uri are not in the environment, so they survive).
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # --- Security headers (served on the static SPA edge) --------------------
+    # NOTE: nginx does NOT inherit server-level add_header into any location
+    # that declares its own add_header, so these are repeated in /assets/ below.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    # CSP scoped to what this app actually loads: own JS/CSS, Google Fonts
+    # (stylesheet + woff2), data: images. API is same-origin (connect-src 'self').
+    # If you set VITE_API_BASE_URL to a different origin, add it to connect-src.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+
+    # Long-cache fingerprinted build assets.
+    location /assets/ {
+        # Re-declare security headers (see NOTE above) plus caching.
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+        add_header Cache-Control "public, immutable, max-age=31536000";
+        try_files $uri =404;
+    }
+
+    # Proxy API calls to the backend container. proxy_pass has no path, so the
+    # original /api/... URI is forwarded unchanged.
+    location /api/ {
+        proxy_pass ${BACKEND_ORIGIN};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 180s;
+    }
+
+    location = /health {
+        proxy_pass ${BACKEND_ORIGIN}/health;
+    }
+
+    # SPA fallback — let the client router handle unknown paths.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
