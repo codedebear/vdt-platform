@@ -93,9 +93,12 @@ re-run (e.g. QA after a change request) without overwriting history.
 | `QA` | `QA` | — |
 | `OPERATION` (default) | `DOCS` | — |
 
-New registrations are created as `OPERATION`. Role assignment is currently
-manual (SQL `UPDATE "User" SET role = '<ROLE>' WHERE email = '<email>'`; see
-`qa/seed-roles.sql`) — a user-management endpoint/UI is a planned follow-up.
+New registrations are created as `OPERATION`. A `SUPER_ADMIN` can then assign
+roles through the user-management API (`PATCH /api/users/:id/role`, see below).
+To bootstrap the **first** `SUPER_ADMIN` — before any admin exists — promote a
+registered user once via SQL (`UPDATE "User" SET role = 'SUPER_ADMIN' WHERE
+email = '<email>'`; see `qa/seed-roles.sql`); after that, manage roles via the API.
+A management UI is a planned frontend follow-up.
 
 ## How it works
 
@@ -267,6 +270,30 @@ review. `APPROVE` marks the run `APPROVED` and stamps `completedAt`;
 `action` is `APPROVE` or `REQUEST_CHANGES`.
 **Response:** `200 OK`. Errors: `403`, `404`, `409` (not awaiting review), `422`.
 
+### Users (admin)
+All routes require authentication **and** the `USER_MANAGE` permission
+(`SUPER_ADMIN` only). User objects never include the password hash.
+
+#### `GET /api/users`
+Lists all users (oldest first).
+**Response:** `200 OK` with an array of
+`{ id, email, name, role, createdAt, updatedAt }`. Errors: `403` not a super admin.
+
+#### `GET /api/users/:id`
+Fetches one user. **Response:** `200 OK`. Errors: `403`, `404` not found.
+
+#### `PATCH /api/users/:id/role`
+Changes a user's global role.
+**Request body:**
+```json
+{ "role": "QA" }
+```
+`role` is one of `SUPER_ADMIN`, `PROJECT_OWNER`, `BA`, `SA`, `QA`, `OPERATION`.
+Re-assigning the role a user already has is allowed (idempotent).
+**Response:** `200 OK` with the updated user. Errors: `403` not a super admin,
+`404` user not found, `409` if the change would change your own role or demote
+the last super admin, `422` invalid role.
+
 ### Health
 
 #### `GET /health`
@@ -282,7 +309,7 @@ npm test                    # Jest unit + integration tests
 Pure-domain engines (`workflow`, `permissions`, `prompts`) and the generation
 service are unit-tested in isolation; `health` is covered with supertest.
 End-to-end smoke scripts live in `qa/` (`smoke-phase2.sh`, `smoke-phase2.5.sh`,
-`smoke-phase3.sh`) and run against a deployed instance.
+`smoke-phase3.sh`, `smoke-phase4.sh`) and run against a deployed instance.
 
 ## Deployment
 
