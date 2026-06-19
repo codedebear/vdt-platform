@@ -1,14 +1,14 @@
-# Docker Deploy — VDT Platform (Dev Sub-phase 1)
+# Docker Deploy — VDT Platform
 
-Backend API + JWT auth, running in Docker on a Raspberry Pi.
+Backend API (JWT auth, RBAC, AI phase generation) running in Docker on a Raspberry Pi.
 Database is **Neon** (managed serverless Postgres) — no DB container on the Pi.
 
-Code is on GitHub: `https://github.com/codedebear/vdt-platform` (branch `main`, commit `8edb344`).
+Code is on GitHub: `https://github.com/codedebear/vdt-platform` (branch `main`).
 
 ---
 
 ## 0. (Already done from the build side)
-Sub-phase 1 has been committed and pushed to `main`. Nothing to do here — go to step 1 on the Pi.
+The latest sub-phase has been committed and pushed to `main`. Nothing to do here — go to step 1 on the Pi.
 
 ---
 
@@ -50,8 +50,17 @@ Fill in these keys:
 | `JWT_EXPIRES_IN` | `8h` |
 | `PORT` | `4000` |
 | `NODE_ENV` | `production` |
+| `ANTHROPIC_API_KEY` | Your Anthropic key (optional — `/generate` returns `503` without it) |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` (default; override if needed) |
+| `ANTHROPIC_MAX_TOKENS` | `8000` (default) |
+| `ANTHROPIC_TIMEOUT_MS` | `120000` (default) |
+| `ANTHROPIC_MAX_RETRIES` | `2` (default) |
+| `GENERATE_RATE_LIMIT_PER_MIN` | `10` (default) — per-user limit on `/generate` |
+| `GENERATE_MAX_PER_RUN` | `5` (default) — max regenerations per phase run |
 
-> Do not commit this file. Keep the Neon password and JWT secret off git.
+> Do not commit this file. Keep the Neon password, JWT secret, and Anthropic key off git.
+> The `ANTHROPIC_*` and `GENERATE_*` keys have safe defaults in `docker-compose.yml`, so
+> you only need to set `ANTHROPIC_API_KEY` to enable AI generation; the rest are optional.
 
 ---
 
@@ -61,9 +70,16 @@ Fill in these keys:
 docker compose up --build -d
 ```
 
-On first start the container runs `prisma db push` to sync the `User` table
-to Neon, then boots the API. (Prisma's engine is generated inside the build on
-the Pi, so the correct ARM build is selected automatically.)
+On first start the container runs `prisma db push` to sync the schema
+(`User`, `Project`, `PhaseExecution`) to Neon, then boots the API. (Prisma's
+engine is generated inside the build on the Pi, so the correct ARM build is
+selected automatically.)
+
+> **Assigning roles.** Every registration creates an `OPERATION` user. To grant
+> a worker or owner role, run SQL against Neon after the user registers, e.g.
+> `UPDATE "User" SET role = 'PROJECT_OWNER' WHERE email = 'owner@codedebear.com';`
+> Valid roles: `SUPER_ADMIN`, `PROJECT_OWNER`, `BA`, `SA`, `QA`, `OPERATION`
+> (see `qa/seed-roles.sql`). A user-management endpoint/UI is a planned follow-up.
 
 ---
 
