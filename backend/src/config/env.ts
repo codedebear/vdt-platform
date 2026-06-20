@@ -24,6 +24,19 @@ const envSchema = z.object({
   // Cost/abuse guards for the paid /generate endpoint.
   GENERATE_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(10),
   GENERATE_MAX_PER_RUN: z.coerce.number().int().positive().default(5),
+  // Per-project AI cost budget (approximate USD). Default applied to new
+  // projects; 0 means unlimited (stored as null on the project). Enforced as a
+  // hard block on /generate once a project's accumulated spend reaches it.
+  PROJECT_BUDGET_USD_DEFAULT: z.coerce.number().min(0).default(0),
+  // Optional per-million-token price overrides for the active model. When unset
+  // (0), the built-in pricing table (domain/pricing.ts) is used. Set these if
+  // Anthropic's prices change so cost estimates stay accurate without a redeploy.
+  ANTHROPIC_PRICE_INPUT_PER_MTOK: z.coerce.number().min(0).default(0),
+  ANTHROPIC_PRICE_OUTPUT_PER_MTOK: z.coerce.number().min(0).default(0),
+  // Prompt cost guards: cap the stored run input and each prior-phase output
+  // folded into a generation prompt, to bound token cost (cost-DoS protection).
+  INPUT_MAX_CHARS: z.coerce.number().int().positive().default(100000),
+  PRIOR_OUTPUT_MAX_CHARS: z.coerce.number().int().positive().default(20000),
   // Attachment limits. Kept tight because files are stored inline in Postgres
   // (Neon free tier is 0.5GB) and large docs inflate generation token cost.
   ATTACHMENT_MAX_FILE_MB: z.coerce.number().positive().default(10),
@@ -59,6 +72,11 @@ export const env = {
   anthropicMaxRetries: parsed.data.ANTHROPIC_MAX_RETRIES,
   generateRateLimitPerMin: parsed.data.GENERATE_RATE_LIMIT_PER_MIN,
   generateMaxPerRun: parsed.data.GENERATE_MAX_PER_RUN,
+  projectBudgetUsdDefault: parsed.data.PROJECT_BUDGET_USD_DEFAULT,
+  anthropicPriceInputPerMTok: parsed.data.ANTHROPIC_PRICE_INPUT_PER_MTOK,
+  anthropicPriceOutputPerMTok: parsed.data.ANTHROPIC_PRICE_OUTPUT_PER_MTOK,
+  inputMaxChars: parsed.data.INPUT_MAX_CHARS,
+  priorOutputMaxChars: parsed.data.PRIOR_OUTPUT_MAX_CHARS,
   attachmentMaxFileMb: parsed.data.ATTACHMENT_MAX_FILE_MB,
   attachmentMaxPerRun: parsed.data.ATTACHMENT_MAX_PER_RUN,
   attachmentMaxTotalMb: parsed.data.ATTACHMENT_MAX_TOTAL_MB,

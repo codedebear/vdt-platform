@@ -12,6 +12,11 @@ const createProjectSchema = z.object({
   track: z.enum(['FULL_SDLC', 'QA_ONLY']),
 });
 
+const updateBudgetSchema = z.object({
+  // null clears the budget (unlimited); a number is the lifetime USD cap.
+  budgetUsd: z.number().nonnegative('Budget must be zero or positive').nullable(),
+});
+
 /** POST /api/projects — create a project owned by the authenticated user. */
 export async function createProject(
   req: Request,
@@ -58,6 +63,32 @@ export async function getProject(
     const project = await projectService.getProjectWithNextPhase(req.params.id);
     res.status(200).json(project);
   } catch (err) {
+    next(err);
+  }
+}
+
+/** PATCH /api/projects/:id/budget — set or clear the project's AI cost budget. */
+export async function updateProjectBudget(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const { budgetUsd } = updateBudgetSchema.parse(req.body);
+    const project = await projectService.updateProjectBudget(
+      { id: req.user.id, role: req.user.role },
+      req.params.id,
+      budgetUsd,
+    );
+    res.status(200).json(project);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
+      return;
+    }
     next(err);
   }
 }

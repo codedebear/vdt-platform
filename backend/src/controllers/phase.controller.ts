@@ -6,15 +6,19 @@
 import { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { AppError } from '../middleware/errorHandler';
+import { env } from '../config/env';
 import * as phaseService from '../services/phase.service';
 
 const startPhaseSchema = z.object({
   phaseType: z.enum(['PLANNER', 'DEV', 'QA', 'CODE_REVIEW', 'DOCS']),
-  input: z.string().optional(),
+  input: z
+    .string()
+    .max(env.inputMaxChars, `Input must be at most ${env.inputMaxChars} characters`)
+    .optional(),
 });
 
 const submitOutputSchema = z.object({
-  output: z.string().min(1, 'Output is required'),
+  output: z.string().min(1, 'Output is required').max(env.inputMaxChars * 5),
 });
 
 const reviewSchema = z.object({

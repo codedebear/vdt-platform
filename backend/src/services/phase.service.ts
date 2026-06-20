@@ -23,8 +23,15 @@ import {
 } from '../domain/workflow';
 import { can, Role } from '../domain/permissions';
 import { buildPrompt, PriorOutput } from '../domain/prompts';
+import { estimateCostUsd } from '../domain/pricing';
+import { isBudgetExhausted } from '../domain/budget';
 import { generateText, GenerationClient } from './generation.service';
 import { prepareAttachments } from './attachmentContent.service';
+
+/** Truncates a string to at most `max` characters, marking where it was cut. */
+function truncate(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max)}\n…[truncated]`;
+}
 
 /** The authenticated user performing an action. */
 export interface Actor {
@@ -211,8 +218,28 @@ export async function generatePhaseOutput(
     );
   }
 
-  // Cost guard: cap how many times a single run may be (re)generated.
-  if (execution.generationCount >= env.generateMaxPerRun) {
+  // Cost guard (hard block): refuse if the project's accumulated AI spend has
+  // reached its budget. Checked before the paid Claude call so no tokens are
+  // spent once exhausted.
+  if (isBudgetExhausted(execution.project.spentUsd, execution.project.budgetUsd)) {
+    throw new AppError(
+      `This project has reached its AI budget ($${execution.project.budgetUsd?.toFixed(2)}); ask an admin to raise it`,
+      402,
+    );
+  }
+
+  // Cost guard: cap how many times a single run may be (re)generated. Claim a
+  // slot atomically (conditional increment) so concurrent regenerates cannot
+  // both pass a stale read and exceed the cap.
+  const claim = await prisma.phaseExecution.updateMany({
+    where: {
+      id: executionId,
+      status: { in: ['IN_PROGRESS', 'CHANGES_REQUESTED'] },
+      generationCount: { lt: env.generateMaxPerRun },
+    },
+    data: { generationCount: { increment: 1 } },
+  });
+  if (claim.count === 0) {
     throw new AppError(
       `This run has reached its generation limit (${env.generateMaxPerRun}); submit or have it reviewed instead`,
       429,
@@ -221,7 +248,8 @@ export async function generatePhaseOutput(
 
   const priorOutputs: PriorOutput[] = execution.project.executions.map((e) => ({
     phaseType: e.phaseType as PhaseType,
-    output: e.output as string,
+    // Cap each prior output folded into the prompt to bound token cost.
+    output: truncate(e.output as string, env.priorOutputMaxChars),
   }));
 
   const { system, user } = buildPrompt({
@@ -230,33 +258,59 @@ export async function generatePhaseOutput(
     track: execution.project.track as Track,
     phaseType,
     priorOutputs,
-    input: execution.input ?? undefined,
+    input: execution.input ? truncate(execution.input, env.inputMaxChars) : undefined,
   });
 
-  // Fold in any attachments: PDFs become document blocks Claude reads directly;
-  // spreadsheets/Word/text are extracted and appended to the prompt.
-  const prepared = await prepareAttachments(
-    execution.attachments.map((a) => ({
-      filename: a.filename,
-      mimeType: a.mimeType,
-      data: Buffer.from(a.data),
-    })),
-  );
-  const userPrompt =
-    prepared.textSections.length > 0
-      ? `${user}\n\n## Attached documents\n${prepared.textSections.join('\n\n')}`
-      : user;
+  let result;
+  try {
+    // Fold in any attachments: PDFs become document blocks Claude reads directly;
+    // spreadsheets/Word/text are extracted and appended to the prompt.
+    const prepared = await prepareAttachments(
+      execution.attachments.map((a) => ({
+        filename: a.filename,
+        mimeType: a.mimeType,
+        data: Buffer.from(a.data),
+      })),
+    );
+    const userPrompt =
+      prepared.textSections.length > 0
+        ? `${user}\n\n## Attached documents\n${prepared.textSections.join('\n\n')}`
+        : user;
 
-  const result = await generateText(system, userPrompt, client, prepared.documents);
+    result = await generateText(system, userPrompt, client, prepared.documents);
+  } catch (err) {
+    // The generation (or attachment prep) failed, so release the slot we claimed
+    // — a failed attempt should not count against the per-run regeneration cap.
+    await prisma.phaseExecution
+      .updateMany({
+        where: { id: executionId, generationCount: { gt: 0 } },
+        data: { generationCount: { decrement: 1 } },
+      })
+      .catch(() => undefined);
+    throw err;
+  }
 
-  return prisma.phaseExecution.update({
-    where: { id: executionId },
-    data: {
-      output: result.text,
-      status: 'AWAITING_REVIEW',
-      inputTokens: result.inputTokens,
-      outputTokens: result.outputTokens,
-      generationCount: { increment: 1 },
-    },
+  // Record the output and bill the project's budget. Both updates run in one
+  // transaction so the run and the project's accumulated spend stay consistent.
+  const costUsd = estimateCostUsd(env.anthropicModel, result.inputTokens, result.outputTokens, {
+    inputPerMTok: env.anthropicPriceInputPerMTok,
+    outputPerMTok: env.anthropicPriceOutputPerMTok,
   });
+  const [updated] = await prisma.$transaction([
+    prisma.phaseExecution.update({
+      where: { id: executionId },
+      data: {
+        output: result.text,
+        status: 'AWAITING_REVIEW',
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        costUsd,
+      },
+    }),
+    prisma.project.update({
+      where: { id: execution.project.id },
+      data: { spentUsd: { increment: costUsd } },
+    }),
+  ]);
+  return updated;
 }

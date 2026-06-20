@@ -120,10 +120,11 @@ export async function generateText(
       messages: [{ role: 'user', content }],
     });
   } catch (err) {
-    // Log the raw upstream error server-side; return a generic message so
-    // internal details are not leaked to the client.
+    // Log only the error message server-side (not the raw error object, which
+    // can carry request/prompt content); return a generic message to the client.
+    const message = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console
-    console.error('Anthropic generation error:', err);
+    console.error('Anthropic generation error:', message);
     throw new AppError('AI generation request failed upstream', 502);
   }
 
