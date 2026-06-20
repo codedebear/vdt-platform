@@ -9,9 +9,12 @@
 import type {
   AuthResponse,
   CreateProjectInput,
+  PhaseExecution,
   Project,
   ProjectDetail,
   ProjectListItem,
+  ReviewPhaseInput,
+  StartPhaseInput,
 } from './types';
 
 /** Base URL for API calls; empty string means same-origin relative paths. */
@@ -119,4 +122,31 @@ export const api = {
 
   createProject: (input: CreateProjectInput) =>
     request<Project>('/api/projects', { method: 'POST', body: input }),
+
+  /** Start a new run of a phase on a project. */
+  startPhase: (projectId: string, input: StartPhaseInput) =>
+    request<PhaseExecution>(`/api/projects/${projectId}/phases`, {
+      method: 'POST',
+      body: input,
+    }),
+
+  /** Generate a run's output via Claude (moves it to AWAITING_REVIEW). */
+  generatePhase: (executionId: string) =>
+    request<PhaseExecution>(`/api/phases/${executionId}/generate`, {
+      method: 'POST',
+    }),
+
+  /** Submit a run's output manually (override of AI generation). */
+  submitOutput: (executionId: string, output: string) =>
+    request<PhaseExecution>(`/api/phases/${executionId}/output`, {
+      method: 'POST',
+      body: { output },
+    }),
+
+  /** Approve or request changes on a run awaiting review. */
+  reviewPhase: (executionId: string, input: ReviewPhaseInput) =>
+    request<PhaseExecution>(`/api/phases/${executionId}/review`, {
+      method: 'POST',
+      body: input,
+    }),
 };

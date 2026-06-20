@@ -82,3 +82,18 @@ export interface CreateProjectInput {
   description?: string;
   track: Track;
 }
+
+/** Human review decision on a phase run. */
+export type ReviewAction = 'APPROVE' | 'REQUEST_CHANGES';
+
+/** Body for POST /api/projects/:id/phases — start a new run of a phase. */
+export interface StartPhaseInput {
+  phaseType: PhaseType;
+  input?: string;
+}
+
+/** Body for POST /api/phases/:id/review. */
+export interface ReviewPhaseInput {
+  action: ReviewAction;
+  note?: string;
+}

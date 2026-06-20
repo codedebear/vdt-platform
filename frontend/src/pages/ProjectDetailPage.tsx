@@ -1,49 +1,76 @@
 /**
  * Project detail: header (name/track/status), the engine's suggested next phase,
- * and the chronological phase-execution history. Phase actions (start / generate
- * / review) arrive in FE-3 — this view is read-only.
+ * a "start phase" panel, and the chronological phase-execution history with
+ * inline lifecycle actions (generate / submit / review). Actions and their
+ * visibility are gated by the viewer's role; the backend re-checks every call.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
 import type { ProjectDetail } from '../lib/types';
 import { formatDateTime } from '../lib/format';
+import { can } from '../lib/permissions';
+import { useAuth } from '../auth/AuthContext';
 import {
   Card,
   PHASE_LABELS,
-  PhaseStatusBadge,
   ProjectStatusBadge,
   TrackBadge,
 } from '../components/ui';
 import { ErrorState, LoadingState } from '../components/PageState';
+import PhaseExecutionCard from '../components/PhaseExecutionCard';
+import StartPhaseCard from '../components/StartPhaseCard';
 
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const { user } = useAuth();
   const [project, setProject] = useState<ProjectDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(async (): Promise<void> => {
     if (!id) return;
+    try {
+      const data = await api.getProject(id);
+      setProject(data);
+      setError(null);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.status === 404
+            ? 'Project not found.'
+            : err.message
+          : 'Failed to load project',
+      );
+    }
+  }, [id]);
+
+  useEffect(() => {
     let active = true;
     setProject(null);
     setError(null);
+    // Guard against a stale response landing after navigation.
     api
-      .getProject(id)
+      .getProject(id ?? '')
       .then((data) => active && setProject(data))
-      .catch((err) =>
-        active &&
-        setError(
-          err instanceof ApiError
-            ? err.status === 404
-              ? 'Project not found.'
-              : err.message
-            : 'Failed to load project',
-        ),
+      .catch(
+        (err) =>
+          active &&
+          setError(
+            err instanceof ApiError
+              ? err.status === 404
+                ? 'Project not found.'
+                : err.message
+              : 'Failed to load project',
+          ),
       );
     return () => {
       active = false;
     };
   }, [id]);
+
+  const role = user?.role;
+  const isOwner = Boolean(user && project && user.id === project.ownerId);
+  const canReview = Boolean(role && can(role, 'PHASE_REVIEW', { isProjectOwner: isOwner }));
 
   return (
     <div>
@@ -54,7 +81,7 @@ export default function ProjectDetailPage() {
       {error && <ErrorState message={error} />}
       {!error && project === null && <LoadingState label="Loading project…" />}
 
-      {!error && project && (
+      {!error && project && role && (
         <>
           <header className="mt-3 mb-6 flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -85,6 +112,8 @@ export default function ProjectDetailPage() {
             )}
           </Card>
 
+          <StartPhaseCard project={project} role={role} onChanged={load} />
+
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
             Phase history
           </h2>
@@ -96,29 +125,13 @@ export default function ProjectDetailPage() {
           ) : (
             <div className="space-y-3">
               {project.executions.map((ex) => (
-                <Card key={ex.id} className="p-4">
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <span className="font-medium text-slate-800">
-                        {PHASE_LABELS[ex.phaseType]}
-                      </span>
-                      <span className="text-xs text-slate-400">Run #{ex.runNumber}</span>
-                    </div>
-                    <PhaseStatusBadge status={ex.status} />
-                  </div>
-                  {ex.reviewNote && (
-                    <p className="mt-2 rounded-md bg-slate-50 px-3 py-2 text-sm text-slate-600">
-                      <span className="font-medium">Review note:</span> {ex.reviewNote}
-                    </p>
-                  )}
-                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
-                    <span>Started {formatDateTime(ex.startedAt)}</span>
-                    {ex.completedAt && <span>Completed {formatDateTime(ex.completedAt)}</span>}
-                    {ex.outputTokens != null && (
-                      <span>{ex.outputTokens.toLocaleString()} output tokens</span>
-                    )}
-                  </div>
-                </Card>
+                <PhaseExecutionCard
+                  key={ex.id}
+                  execution={ex}
+                  canWork={can(role, 'PHASE_SUBMIT', { phaseType: ex.phaseType })}
+                  canReview={canReview}
+                  onChanged={load}
+                />
               ))}
             </div>
           )}
