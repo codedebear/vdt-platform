@@ -219,3 +219,13 @@ export const ROLE_LABELS: Record<Role, string> = {
   QA: 'QA Engineer',
   OPERATION: 'Operation',
 };
+
+/** All roles in a stable, privilege-descending display order. */
+export const ROLE_ORDER: Role[] = [
+  'SUPER_ADMIN',
+  'PROJECT_OWNER',
+  'BA',
+  'SA',
+  'QA',
+  'OPERATION',
+];

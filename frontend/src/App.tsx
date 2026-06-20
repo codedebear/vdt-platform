@@ -8,6 +8,7 @@ import RegisterPage from './pages/RegisterPage';
 import ProjectsPage from './pages/ProjectsPage';
 import NewProjectPage from './pages/NewProjectPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
+import UsersPage from './pages/UsersPage';
 
 export default function App() {
   const { isAuthenticated } = useAuth();
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/new" element={<NewProjectPage />} />
           <Route path="/projects/:id" element={<ProjectDetailPage />} />
+          <Route path="/users" element={<UsersPage />} />
         </Route>
       </Route>
 

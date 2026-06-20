@@ -7,6 +7,7 @@
  * - Emits a callback on 401 so the app can force a logout on token expiry.
  */
 import type {
+  AdminUser,
   AuthResponse,
   CreateProjectInput,
   PhaseExecution,
@@ -14,6 +15,7 @@ import type {
   ProjectDetail,
   ProjectListItem,
   ReviewPhaseInput,
+  Role,
   StartPhaseInput,
 } from './types';
 
@@ -148,5 +150,15 @@ export const api = {
     request<PhaseExecution>(`/api/phases/${executionId}/review`, {
       method: 'POST',
       body: input,
+    }),
+
+  /** List all users (SUPER_ADMIN only). */
+  listUsers: () => request<AdminUser[]>('/api/users'),
+
+  /** Change a user's global role (SUPER_ADMIN only). */
+  updateUserRole: (userId: string, role: Role) =>
+    request<AdminUser>(`/api/users/${userId}/role`, {
+      method: 'PATCH',
+      body: { role },
     }),
 };

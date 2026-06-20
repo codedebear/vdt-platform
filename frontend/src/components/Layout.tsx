@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
+import { can } from '../lib/permissions';
 import { ROLE_LABELS } from './ui';
 
 function initials(name: string): string {
@@ -16,12 +17,18 @@ function initials(name: string): string {
     .join('');
 }
 
-const NAV_ITEMS = [{ to: '/projects', label: 'Projects' }];
-
 export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // "Users" is admin-only; the page + backend also guard it.
+  const navItems = [
+    { to: '/projects', label: 'Projects' },
+    ...(user && can(user.role, 'USER_MANAGE')
+      ? [{ to: '/users', label: 'Users' }]
+      : []),
+  ];
 
   function handleLogout() {
     logout();
@@ -39,7 +46,7 @@ export default function Layout() {
           <span className="text-base font-semibold text-slate-800">VDT Platform</span>
         </div>
         <nav className="flex-1 space-y-1 p-3">
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

@@ -83,6 +83,16 @@ export interface CreateProjectInput {
   track: Track;
 }
 
+/** A user as returned by the admin /api/users endpoints (no password hash). */
+export interface AdminUser {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** Human review decision on a phase run. */
 export type ReviewAction = 'APPROVE' | 'REQUEST_CHANGES';
 
