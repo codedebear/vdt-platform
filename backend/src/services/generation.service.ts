@@ -16,14 +16,33 @@ export interface GenerationResponse {
   usage?: { input_tokens?: number; output_tokens?: number };
 }
 
-/** The slice of the Anthropic client this service depends on. */
+/** A plain text content block. */
+export interface TextBlock {
+  type: 'text';
+  text: string;
+}
+
+/**
+ * A document content block — how a PDF is handed to Claude so it reads the file
+ * (text and scanned pages via vision) directly, without our own extraction.
+ */
+export interface DocumentBlock {
+  type: 'document';
+  source: { type: 'base64'; media_type: string; data: string };
+}
+
+export type ContentBlock = TextBlock | DocumentBlock;
+
+/** The slice of the Anthropic client this service depends on. The user message
+ * content may be a plain string (no attachments) or an array of content blocks
+ * (a text block plus one document block per attached PDF). */
 export interface GenerationClient {
   messages: {
     create(args: {
       model: string;
       max_tokens: number;
       system: string;
-      messages: { role: 'user'; content: string }[];
+      messages: { role: 'user'; content: string | ContentBlock[] }[];
     }): Promise<GenerationResponse>;
   };
 }
@@ -74,14 +93,23 @@ async function getDefaultClient(): Promise<GenerationClient> {
  * @param user - The user prompt carrying project context.
  * @param client - Optional injected client (used by tests); falls back to the
  *   real Anthropic client built from env.
+ * @param documents - Optional PDF document blocks to attach to the user message.
+ *   When present, the user content is sent as `[text, ...documents]`; otherwise
+ *   it remains a plain string (unchanged behaviour).
  * @throws {AppError} 503 if unconfigured, 502 if the API returns no text or errors.
  */
 export async function generateText(
   system: string,
   user: string,
   client?: GenerationClient,
+  documents?: DocumentBlock[],
 ): Promise<GenerationResult> {
   const c = client ?? (await getDefaultClient());
+
+  const content: string | ContentBlock[] =
+    documents && documents.length > 0
+      ? [{ type: 'text', text: user }, ...documents]
+      : user;
 
   let response: GenerationResponse;
   try {
@@ -89,7 +117,7 @@ export async function generateText(
       model: env.anthropicModel,
       max_tokens: env.anthropicMaxTokens,
       system,
-      messages: [{ role: 'user', content: user }],
+      messages: [{ role: 'user', content }],
     });
   } catch (err) {
     // Log the raw upstream error server-side; return a generic message so

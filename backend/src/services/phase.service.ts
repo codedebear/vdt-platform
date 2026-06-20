@@ -24,6 +24,7 @@ import {
 import { can, Role } from '../domain/permissions';
 import { buildPrompt, PriorOutput } from '../domain/prompts';
 import { generateText, GenerationClient } from './generation.service';
+import { prepareAttachments } from './attachmentContent.service';
 
 /** The authenticated user performing an action. */
 export interface Actor {
@@ -180,6 +181,10 @@ export async function generatePhaseOutput(
   const execution = await prisma.phaseExecution.findUnique({
     where: { id: executionId },
     include: {
+      attachments: {
+        select: { filename: true, mimeType: true, data: true },
+        orderBy: { createdAt: 'asc' },
+      },
       project: {
         include: {
           executions: {
@@ -228,7 +233,21 @@ export async function generatePhaseOutput(
     input: execution.input ?? undefined,
   });
 
-  const result = await generateText(system, user, client);
+  // Fold in any attachments: PDFs become document blocks Claude reads directly;
+  // spreadsheets/Word/text are extracted and appended to the prompt.
+  const prepared = await prepareAttachments(
+    execution.attachments.map((a) => ({
+      filename: a.filename,
+      mimeType: a.mimeType,
+      data: Buffer.from(a.data),
+    })),
+  );
+  const userPrompt =
+    prepared.textSections.length > 0
+      ? `${user}\n\n## Attached documents\n${prepared.textSections.join('\n\n')}`
+      : user;
+
+  const result = await generateText(system, userPrompt, client, prepared.documents);
 
   return prisma.phaseExecution.update({
     where: { id: executionId },

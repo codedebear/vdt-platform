@@ -32,6 +32,9 @@ const envSchema = z.object({
   // Per-user rate limit for the upload endpoint (writes to Postgres + buffers in
   // memory), to protect the shared storage/memory budget from abuse.
   ATTACHMENT_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(20),
+  // Max characters of extracted text included per non-PDF attachment when
+  // generating, to cap token cost. Extracted text beyond this is truncated.
+  ATTACHMENT_TEXT_CHAR_CAP: z.coerce.number().int().positive().default(100000),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -60,4 +63,5 @@ export const env = {
   attachmentMaxPerRun: parsed.data.ATTACHMENT_MAX_PER_RUN,
   attachmentMaxTotalMb: parsed.data.ATTACHMENT_MAX_TOTAL_MB,
   attachmentRateLimitPerMin: parsed.data.ATTACHMENT_RATE_LIMIT_PER_MIN,
+  attachmentTextCharCap: parsed.data.ATTACHMENT_TEXT_CHAR_CAP,
 };
