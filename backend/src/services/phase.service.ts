@@ -327,6 +327,14 @@ async function reserveGenerationSlot(
                 costUsd: reserveUsd,
                 inputTokens: null,
                 outputTokens: null,
+                // Clear any batchId left by a previous generation of this run.
+                // Without this, a re-generated run (e.g. after CHANGES_REQUESTED
+                // or a QA re-test) re-enters QUEUED still carrying the old batchId,
+                // so the attach guard (status=QUEUED AND batchId=null) finds no row
+                // and the run is wrongly FAILED ("Run changed during batch
+                // submission"). It also stops the poller from settling the run
+                // with the *previous* batch's stale result during the submit window.
+                batchId: null,
               }
             : { generationCount: { increment: 1 } },
         });
