@@ -70,6 +70,7 @@ model PhaseExecution {
   inputTokens     Int?
   outputTokens    Int?
   generationCount Int      @default(0)
+  attachments Attachment[]
   startedAt   DateTime    @default(now())
   completedAt DateTime?
   createdAt   DateTime    @default(now())
@@ -77,6 +78,22 @@ model PhaseExecution {
 
   @@unique([projectId, phaseType, runNumber])
   @@index([projectId, phaseType])
+}
+
+/// A document attached to a phase run, supplied as extra context the AI reads
+/// when generating that phase's output (e.g. an SRS or API spec). Stored inline
+/// as bytea — see the attachments design note. Deleted with its run (cascade).
+model Attachment {
+  id          String         @id @default(uuid())
+  execution   PhaseExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  executionId String
+  filename    String
+  mimeType    String
+  sizeBytes   Int
+  data        Bytes
+  createdAt   DateTime       @default(now())
+
+  @@index([executionId])
 }
 
 /// The workflow track a project follows.

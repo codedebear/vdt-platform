@@ -24,6 +24,11 @@ const envSchema = z.object({
   // Cost/abuse guards for the paid /generate endpoint.
   GENERATE_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(10),
   GENERATE_MAX_PER_RUN: z.coerce.number().int().positive().default(5),
+  // Attachment limits. Kept tight because files are stored inline in Postgres
+  // (Neon free tier is 0.5GB) and large docs inflate generation token cost.
+  ATTACHMENT_MAX_FILE_MB: z.coerce.number().positive().default(10),
+  ATTACHMENT_MAX_PER_RUN: z.coerce.number().int().positive().default(5),
+  ATTACHMENT_MAX_TOTAL_MB: z.coerce.number().positive().default(25),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -48,4 +53,7 @@ export const env = {
   anthropicMaxRetries: parsed.data.ANTHROPIC_MAX_RETRIES,
   generateRateLimitPerMin: parsed.data.GENERATE_RATE_LIMIT_PER_MIN,
   generateMaxPerRun: parsed.data.GENERATE_MAX_PER_RUN,
+  attachmentMaxFileMb: parsed.data.ATTACHMENT_MAX_FILE_MB,
+  attachmentMaxPerRun: parsed.data.ATTACHMENT_MAX_PER_RUN,
+  attachmentMaxTotalMb: parsed.data.ATTACHMENT_MAX_TOTAL_MB,
 };
