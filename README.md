@@ -238,7 +238,9 @@ Creates a project owned by the caller. Requires the `PROJECT_CREATE` permission
 Lists all projects. **Response:** `200 OK` with an array of projects.
 
 #### `GET /api/projects/:id`
-Fetches one project with its phase executions and the suggested next phase.
+Fetches one project with its phase executions and the suggested next phase. Each
+execution embeds its **attachment metadata** (`attachments[]`, no file bytes), so
+the detail screen renders attachments without an extra request per run.
 **Response:** `200 OK`. Errors: `404` not found.
 
 #### `POST /api/projects/:id/phases`
@@ -290,9 +292,10 @@ review. `APPROVE` marks the run `APPROVED` and stamps `completedAt`;
 ### Attachments
 Context documents attached to a phase run, read by the AI when it generates that
 run (see "How it works"). Stored inline in Postgres; **read endpoints return
-metadata only — never the file bytes.** Accepted types: PDF, XLSX, XLS, DOCX,
-CSV, TXT, MD. Writes require the phase's worker role and an open run
-(`IN_PROGRESS` or `CHANGES_REQUESTED`).
+metadata only — never the file bytes.** Accepted types and size/count limits are
+served by `GET /api/config` (PDF, XLSX, XLS, DOCX, CSV, TXT, MD by default).
+Writes require the phase's worker role and an open run (`IN_PROGRESS` or
+`CHANGES_REQUESTED`).
 
 #### `POST /api/phases/:executionId/attachments`
 Uploads one or more files. **Per-user rate-limited** (`ATTACHMENT_RATE_LIMIT_PER_MIN`).
@@ -334,6 +337,25 @@ Re-assigning the role a user already has is allowed (idempotent).
 **Response:** `200 OK` with the updated user. Errors: `403` not a super admin,
 `404` user not found, `409` if the change would change your own role or demote
 the last super admin, `422` invalid role.
+
+### Config
+
+#### `GET /api/config`
+Public, non-sensitive runtime configuration the frontend reads so client and
+server never disagree on attachment limits or accepted types. **Response:**
+`200 OK`
+```json
+{
+  "attachments": {
+    "maxFileMb": 10,
+    "maxPerRun": 5,
+    "maxTotalMb": 25,
+    "acceptedExtensions": [".pdf", ".xlsx", ".xls", ".docx", ".txt", ".csv", ".md", ".markdown"]
+  }
+}
+```
+Values come straight from the `ATTACHMENT_*` env vars and the attachments domain
+(the same source the upload pipeline enforces).
 
 ### Health
 
@@ -389,6 +411,11 @@ request (the UI gating is convenience, not the security boundary):
 - **Approve / Request changes** — on an `AWAITING_REVIEW` run, the project
   owner (or `SUPER_ADMIN`) approves it (→ `APPROVED`) or sends it back with an
   optional note (→ `CHANGES_REQUESTED`).
+- **Attachments** — the "Start a phase" panel has a 📎 file picker to stage
+  context documents (shown as removable chips, validated against the server
+  limits from `GET /api/config`); on Start they upload to the new run. Each run
+  card then lists its attachments and, while the run is open, lets the worker add
+  more or remove them — these documents are what the AI reads when generating.
 - **Output viewer** — each run's generated/submitted output is shown in a
   collapsible monospace panel; token counts and regeneration count are listed.
 
@@ -414,7 +441,8 @@ admin — surface as an inline error with the selector reverted.
 
 **Status:** the frontend is feature-complete — auth, app shell, projects
 (list / create / detail), the phase-execution UI (start / generate / submit /
-review), and user administration are all implemented.
+review), document attachments (attach on start, manage per run), and user
+administration are all implemented.
 
 **Local development**
 
@@ -448,9 +476,13 @@ headers, and the `/api` + `/health` proxy path; run with
 → review plus role/status guards; uses the free manual path, with the real AI
 generate call gated behind `GEN_TEST=1`), `smoke-doc1.sh` (attachment upload
 API — valid upload + list + delete, plus the unsupported-type / oversized /
-wrong-role / closed-run guards; no Claude tokens spent), and `smoke-doc2.sh`
+wrong-role / closed-run guards; no Claude tokens spent), `smoke-doc2.sh`
 (generation reads an attached file — attach + generate, with the real Claude call
-gated behind a configured `ANTHROPIC_API_KEY`).
+gated behind a configured `ANTHROPIC_API_KEY`), and `smoke-fe-doc1.sh` (the
+attachment-UI contract — `GET /api/config`, the StartPhaseCard start → upload
+sequence, list / add / delete, attachments embedded in project detail, and the
+approved-run read-only guard; includes an optional frontend build check, skipped
+off-toolchain or with `SKIP_BUILD=1`).
 
 ## Deployment
 
