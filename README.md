@@ -73,6 +73,10 @@ gitignored — copy `.env.example` and fill it in.
 | `ANTHROPIC_MAX_RETRIES` | — | `2` | SDK retry budget on transient upstream errors. |
 | `GENERATE_RATE_LIMIT_PER_MIN` | — | `10` | Per-user rate limit on `/generate` (requests/minute). |
 | `GENERATE_MAX_PER_RUN` | — | `5` | Max (re)generations allowed for a single phase run before `429`. |
+| `ATTACHMENT_MAX_FILE_MB` | — | `10` | Max size of a single attached file. |
+| `ATTACHMENT_MAX_PER_RUN` | — | `5` | Max number of attachments per phase run. |
+| `ATTACHMENT_MAX_TOTAL_MB` | — | `25` | Max combined size of a run's attachments. |
+| `ATTACHMENT_RATE_LIMIT_PER_MIN` | — | `20` | Per-user rate limit on attachment uploads (requests/minute). |
 | `FRONTEND_PORT` | — | `8080` | Host port the frontend (nginx) container is published on. |
 | `VITE_API_BASE_URL` | — | *(empty)* | API origin baked into the SPA at build time. Leave empty for same-origin (nginx proxies `/api`); set only if the API is on a different origin. |
 
@@ -279,6 +283,30 @@ review. `APPROVE` marks the run `APPROVED` and stamps `completedAt`;
 `action` is `APPROVE` or `REQUEST_CHANGES`.
 **Response:** `200 OK`. Errors: `403`, `404`, `409` (not awaiting review), `422`.
 
+### Attachments
+Context documents attached to a phase run, read by the AI when it generates that
+run (see "How it works"). Stored inline in Postgres; **read endpoints return
+metadata only — never the file bytes.** Accepted types: PDF, XLSX, XLS, DOCX,
+CSV, TXT, MD. Writes require the phase's worker role and an open run
+(`IN_PROGRESS` or `CHANGES_REQUESTED`).
+
+#### `POST /api/phases/:executionId/attachments`
+Uploads one or more files. **Per-user rate-limited** (`ATTACHMENT_RATE_LIMIT_PER_MIN`).
+**Request:** `multipart/form-data` with one or more `files` fields.
+**Response:** `201 Created` with the run's attachment metadata array
+(`{ id, executionId, filename, mimeType, sizeBytes, createdAt }`).
+Errors: `400` no files, `403` role not allowed, `404` run missing,
+`409` closed run or per-run count exceeded, `413` file or total size exceeded,
+`415` unsupported type, `429` rate limit.
+
+#### `GET /api/phases/:executionId/attachments`
+Lists a run's attachment metadata (oldest first).
+**Response:** `200 OK`. Errors: `404` run missing.
+
+#### `DELETE /api/phases/:executionId/attachments/:attachmentId`
+Removes one attachment (worker role, open run only).
+**Response:** `204 No Content`. Errors: `403`, `404`, `409` closed run.
+
 ### Users (admin)
 All routes require authentication **and** the `USER_MANAGE` permission
 (`SUPER_ADMIN` only). User objects never include the password hash.
@@ -411,10 +439,12 @@ End-to-end smoke scripts live in `qa/` and run against a deployed instance:
 `smoke-phase2.sh`, `smoke-phase2.5.sh`, `smoke-phase3.sh`, `smoke-phase4.sh`
 (backend), `smoke-frontend.sh` (frontend container — SPA routing, security
 headers, and the `/api` + `/health` proxy path; run with
-`BASE_URL=http://localhost:8080 ./qa/smoke-frontend.sh`), and `smoke-fe3.sh`
+`BASE_URL=http://localhost:8080 ./qa/smoke-frontend.sh`), `smoke-fe3.sh`
 (the phase-lifecycle API contract the project-detail UI drives — start → submit
 → review plus role/status guards; uses the free manual path, with the real AI
-generate call gated behind `GEN_TEST=1`).
+generate call gated behind `GEN_TEST=1`), and `smoke-doc1.sh` (attachment upload
+API — valid upload + list + delete, plus the unsupported-type / oversized /
+wrong-role / closed-run guards; no Claude tokens spent).
 
 ## Deployment
 
