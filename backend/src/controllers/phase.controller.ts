@@ -26,6 +26,14 @@ const reviewSchema = z.object({
   note: z.string().optional(),
 });
 
+// Generation mode: 'sync' returns the output immediately (200); 'batch' submits
+// to the Anthropic Batch API (~50% cheaper, async) and returns a QUEUED run (202)
+// that the background poller later advances. Defaults to 'sync' (backward
+// compatible — an empty body behaves exactly as before BE-BATCH-1).
+const generateSchema = z.object({
+  mode: z.enum(['sync', 'batch']).default('sync'),
+});
+
 /** POST /api/projects/:id/phases — start a new run of a phase. */
 export async function startPhase(
   req: Request,
@@ -78,7 +86,11 @@ export async function submitOutput(
   }
 }
 
-/** POST /api/phases/:executionId/generate — generate this run's output via Claude. */
+/**
+ * POST /api/phases/:executionId/generate — generate this run's output via Claude.
+ * Body `{ mode }`: 'sync' (default) returns the output now (200); 'batch' queues
+ * it on the Anthropic Batch API and returns the QUEUED run (202) for the poller.
+ */
 export async function generatePhase(
   req: Request,
   res: Response,
@@ -88,12 +100,20 @@ export async function generatePhase(
     if (!req.user) {
       throw new AppError('Unauthorized', 401);
     }
-    const execution = await phaseService.generatePhaseOutput(req.params.executionId, {
-      id: req.user.id,
-      role: req.user.role,
-    });
+    const { mode } = generateSchema.parse(req.body ?? {});
+    const actor = { id: req.user.id, role: req.user.role };
+    if (mode === 'batch') {
+      const execution = await phaseService.generatePhaseOutputBatch(req.params.executionId, actor);
+      res.status(202).json(execution);
+      return;
+    }
+    const execution = await phaseService.generatePhaseOutput(req.params.executionId, actor);
     res.status(200).json(execution);
   } catch (err) {
+    if (err instanceof z.ZodError) {
+      next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
+      return;
+    }
     next(err);
   }
 }

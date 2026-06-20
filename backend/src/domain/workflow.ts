@@ -17,6 +17,7 @@ export type PhaseType = 'PLANNER' | 'DEV' | 'QA' | 'CODE_REVIEW' | 'DOCS';
 
 export type PhaseStatus =
   | 'IN_PROGRESS'
+  | 'QUEUED'
   | 'AWAITING_REVIEW'
   | 'APPROVED'
   | 'CHANGES_REQUESTED'
@@ -40,8 +41,10 @@ export const REPEATABLE_PHASES: Record<Track, readonly PhaseType[]> = {
   QA_ONLY: ['QA'],
 };
 
-/** Statuses that mean a phase run is still "open" (not yet resolved). */
-const OPEN_STATUSES: readonly PhaseStatus[] = ['IN_PROGRESS', 'AWAITING_REVIEW'];
+/** Statuses that mean a phase run is still "open" (not yet resolved). A QUEUED
+ * run is mid-generation via the Batch API and counts as open, so a second run of
+ * the same phase cannot be started until it resolves. */
+const OPEN_STATUSES: readonly PhaseStatus[] = ['IN_PROGRESS', 'QUEUED', 'AWAITING_REVIEW'];
 
 /** Minimal view of a phase execution that the engine's decisions depend on. */
 export interface ExecutionSummary {

@@ -4,6 +4,11 @@
  */
 import {
   generateText,
+  submitBatch,
+  collectBatchResults,
+  BatchGenerationClient,
+  BatchHandle,
+  BatchIndividualResponse,
   GenerationClient,
   GenerationResponse,
 } from '../src/services/generation.service';
@@ -80,5 +85,85 @@ describe('generateText', () => {
     };
     await expect(generateText('s', 'u', client)).rejects.toBeInstanceOf(AppError);
     await expect(generateText('s', 'u', client)).rejects.toMatchObject({ statusCode: 502 });
+  });
+});
+
+/** Builds a fake batch client capturing the create args and returning a handle. */
+function fakeBatchClient(
+  handle: BatchHandle,
+  capture?: (args: unknown) => void,
+): BatchGenerationClient {
+  return {
+    beta: {
+      messages: {
+        batches: {
+          create: async (args) => {
+            capture?.(args);
+            return handle;
+          },
+          retrieve: async () => handle,
+          results: async () => [] as BatchIndividualResponse[],
+        },
+      },
+    },
+  };
+}
+
+describe('submitBatch', () => {
+  it('returns the batch id and sends the run id as custom_id', async () => {
+    let seen: { requests?: Array<{ custom_id: string; params: { system: string } }> } = {};
+    const client = fakeBatchClient(
+      { id: 'msgbatch_123', processing_status: 'in_progress' },
+      (args) => {
+        seen = args as typeof seen;
+      },
+    );
+    const id = await submitBatch('SYS', 'USER', 'exec-42', client);
+    expect(id).toBe('msgbatch_123');
+    expect(seen.requests?.[0].custom_id).toBe('exec-42');
+    expect(seen.requests?.[0].params.system).toBe('SYS');
+  });
+
+  it('wraps a create failure as a 502 AppError', async () => {
+    const client: BatchGenerationClient = {
+      beta: {
+        messages: {
+          batches: {
+            create: async () => {
+              throw new Error('upstream down');
+            },
+            retrieve: async () => ({ id: 'x', processing_status: 'ended' }),
+            results: async () => [],
+          },
+        },
+      },
+    };
+    await expect(submitBatch('s', 'u', 'c', client)).rejects.toMatchObject({ statusCode: 502 });
+  });
+});
+
+describe('collectBatchResults', () => {
+  it('drains the async results stream into an array', async () => {
+    const items: BatchIndividualResponse[] = [
+      {
+        custom_id: 'exec-42',
+        result: {
+          type: 'succeeded',
+          message: { content: [{ type: 'text', text: 'hi' }], usage: { input_tokens: 1 } },
+        },
+      },
+    ];
+    const client: BatchGenerationClient = {
+      beta: {
+        messages: {
+          batches: {
+            create: async () => ({ id: 'x', processing_status: 'ended' }),
+            retrieve: async () => ({ id: 'x', processing_status: 'ended' }),
+            results: async () => items,
+          },
+        },
+      },
+    };
+    await expect(collectBatchResults('x', client)).resolves.toEqual(items);
   });
 });

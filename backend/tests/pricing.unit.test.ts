@@ -1,7 +1,12 @@
 /**
  * Unit tests for the pure pricing domain (cost estimation + price resolution).
  */
-import { approxTokensFromChars, estimateCostUsd, resolveModelPrice } from '../src/domain/pricing';
+import {
+  approxTokensFromChars,
+  BATCH_PRICE_FACTOR,
+  estimateCostUsd,
+  resolveModelPrice,
+} from '../src/domain/pricing';
 
 describe('approxTokensFromChars', () => {
   it('over-estimates at ~3 chars/token and never goes negative', () => {
@@ -46,5 +51,15 @@ describe('estimateCostUsd', () => {
     expect(
       estimateCostUsd('claude-sonnet-4-6', 1_000_000, 0, { inputPerMTok: 10 }),
     ).toBeCloseTo(10, 6);
+  });
+
+  it('applies a discount factor (batch = half price) and clamps it at zero', () => {
+    // Sonnet $18 full price at 1M in + 1M out; batch factor halves it.
+    expect(
+      estimateCostUsd('claude-sonnet-4-6', 1_000_000, 1_000_000, undefined, BATCH_PRICE_FACTOR),
+    ).toBeCloseTo(9, 6);
+    expect(BATCH_PRICE_FACTOR).toBe(0.5);
+    // A non-positive factor never produces a negative cost.
+    expect(estimateCostUsd('claude-sonnet-4-6', 1_000_000, 1_000_000, undefined, -1)).toBe(0);
   });
 });

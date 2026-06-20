@@ -74,9 +74,15 @@ model PhaseExecution {
   // last generation; generationCount caps repeated regenerations per run.
   inputTokens     Int?
   outputTokens    Int?
-  // Estimated USD cost of the most recent AI generation on this run.
+  // Estimated USD cost of the most recent AI generation on this run. While a
+  // batch run is QUEUED this transiently holds the *reserved* (upper-bound) cost
+  // until the poller settles it to the actual cost on completion (BE-BATCH-1).
   costUsd         Float?
   generationCount Int      @default(0)
+  // Anthropic Message Batch id for a run generated asynchronously via the Batch
+  // API (BE-BATCH-1). Null for synchronous runs. The background poller uses it
+  // to retrieve results and move a QUEUED run to AWAITING_REVIEW or FAILED.
+  batchId         String?
   attachments Attachment[]
   startedAt   DateTime    @default(now())
   completedAt DateTime?
@@ -126,8 +132,12 @@ enum PhaseType {
 }
 
 /// Lifecycle status of a single phase execution (one run).
+/// QUEUED means the run's output is being generated asynchronously via the
+/// Anthropic Batch API; the background poller advances it to AWAITING_REVIEW on
+/// success or FAILED on error/expiry (BE-BATCH-1).
 enum PhaseStatus {
   IN_PROGRESS
+  QUEUED
   AWAITING_REVIEW
   APPROVED
   CHANGES_REQUESTED

@@ -66,18 +66,34 @@ export function approxTokensFromChars(chars: number): number {
 }
 
 /**
+ * The fraction of the standard token price charged by the Anthropic Message
+ * Batches API — batch processing is billed at 50% of the synchronous rate.
+ * Used as the default `discountFactor` for batch-mode cost estimates.
+ */
+export const BATCH_PRICE_FACTOR = 0.5;
+
+/**
  * Estimates the USD cost of a generation. Null/undefined token counts are
  * treated as 0 (e.g. when the API did not report usage), so the result is never
  * NaN. Returns a non-negative number.
+ *
+ * @param discountFactor - Multiplier applied to the resolved price, for billing
+ *   modes cheaper than the standard rate (e.g. {@link BATCH_PRICE_FACTOR} for
+ *   the Batch API). Defaults to 1 (full price). Values <= 0 are clamped to 0.
  */
 export function estimateCostUsd(
   model: string,
   inputTokens: number | null | undefined,
   outputTokens: number | null | undefined,
   override?: PriceOverride,
+  discountFactor = 1,
 ): number {
   const price = resolveModelPrice(model, override);
   const inTok = Math.max(0, inputTokens ?? 0);
   const outTok = Math.max(0, outputTokens ?? 0);
-  return (inTok / 1_000_000) * price.inputPerMTok + (outTok / 1_000_000) * price.outputPerMTok;
+  const factor = Math.max(0, discountFactor);
+  return (
+    ((inTok / 1_000_000) * price.inputPerMTok + (outTok / 1_000_000) * price.outputPerMTok) *
+    factor
+  );
 }

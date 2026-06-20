@@ -33,17 +33,58 @@ export interface DocumentBlock {
 
 export type ContentBlock = TextBlock | DocumentBlock;
 
-/** The slice of the Anthropic client this service depends on. The user message
- * content may be a plain string (no attachments) or an array of content blocks
- * (a text block plus one document block per attached PDF). */
+/** Messages API creation parameters for one request (shared by the sync and
+ * batch paths). The user content may be a plain string (no attachments) or an
+ * array of content blocks (a text block plus one document block per PDF). */
+export interface MessageCreateParams {
+  model: string;
+  max_tokens: number;
+  system: string;
+  messages: { role: 'user'; content: string | ContentBlock[] }[];
+}
+
+/** The slice of the Anthropic client this service depends on for sync calls. */
 export interface GenerationClient {
   messages: {
-    create(args: {
-      model: string;
-      max_tokens: number;
-      system: string;
-      messages: { role: 'user'; content: string | ContentBlock[] }[];
-    }): Promise<GenerationResponse>;
+    create(args: MessageCreateParams): Promise<GenerationResponse>;
+  };
+}
+
+/** A handle to a submitted Message Batch (subset of BetaMessageBatch). */
+export interface BatchHandle {
+  id: string;
+  processing_status: 'in_progress' | 'canceling' | 'ended';
+  results_url?: string | null;
+}
+
+/** One per-request entry in a finished batch's results (subset of
+ * BetaMessageBatchIndividualResponse). `message` carries the Messages-API
+ * response shape this service already understands. */
+export interface BatchIndividualResponse {
+  custom_id: string;
+  result: {
+    type: 'succeeded' | 'errored' | 'canceled' | 'expired';
+    message?: GenerationResponse;
+  };
+}
+
+/** The slice of the Anthropic client this service depends on for batch calls.
+ * Mirrors `client.beta.messages.batches.*` in @anthropic-ai/sdk 0.30.x. */
+export interface BatchGenerationClient {
+  beta: {
+    messages: {
+      batches: {
+        create(args: {
+          requests: Array<{ custom_id: string; params: MessageCreateParams }>;
+        }): Promise<BatchHandle>;
+        retrieve(messageBatchId: string): Promise<BatchHandle>;
+        // The SDK returns an async (JSONL) stream; a sync iterable is also
+        // accepted so tests can return a plain array. `for await` handles both.
+        results(
+          messageBatchId: string,
+        ): Promise<AsyncIterable<BatchIndividualResponse> | Iterable<BatchIndividualResponse>>;
+      };
+    };
   };
 }
 
@@ -54,14 +95,17 @@ export interface GenerationResult {
   outputTokens: number | null;
 }
 
-let cachedClient: GenerationClient | null = null;
+/** The real Anthropic client exposes both the sync and batch surfaces. */
+type AnthropicClient = GenerationClient & BatchGenerationClient;
+
+let cachedClient: AnthropicClient | null = null;
 
 /**
  * Lazily constructs (and caches) the real Anthropic client, configured with a
  * request timeout and retry budget from env.
  * @throws {AppError} 503 if ANTHROPIC_API_KEY is not configured.
  */
-async function getDefaultClient(): Promise<GenerationClient> {
+async function getDefaultClient(): Promise<AnthropicClient> {
   if (cachedClient) {
     return cachedClient;
   }
@@ -77,7 +121,7 @@ async function getDefaultClient(): Promise<GenerationClient> {
       apiKey: string;
       timeout?: number;
       maxRetries?: number;
-    }) => GenerationClient;
+    }) => AnthropicClient;
   };
   cachedClient = new Anthropic({
     apiKey: env.anthropicApiKey,
@@ -85,6 +129,38 @@ async function getDefaultClient(): Promise<GenerationClient> {
     maxRetries: env.anthropicMaxRetries,
   });
   return cachedClient;
+}
+
+/** Builds the user-message content: a plain string when there are no document
+ * attachments, otherwise a text block followed by one document block per PDF. */
+function buildUserContent(user: string, documents?: DocumentBlock[]): string | ContentBlock[] {
+  return documents && documents.length > 0
+    ? [{ type: 'text', text: user }, ...documents]
+    : user;
+}
+
+/**
+ * Parses a Messages-API response into our {@link GenerationResult}: joins the
+ * text blocks and reads token usage. Shared by the synchronous path and the
+ * batch poller (which receives the same response shape per batch result).
+ * @throws {AppError} 502 if the response contains no text.
+ */
+export function parseGenerationResponse(response: GenerationResponse): GenerationResult {
+  const text = response.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text ?? '')
+    .join('\n')
+    .trim();
+
+  if (!text) {
+    throw new AppError('AI generation returned an empty response', 502);
+  }
+
+  return {
+    text,
+    inputTokens: response.usage?.input_tokens ?? null,
+    outputTokens: response.usage?.output_tokens ?? null,
+  };
 }
 
 /**
@@ -106,18 +182,13 @@ export async function generateText(
 ): Promise<GenerationResult> {
   const c = client ?? (await getDefaultClient());
 
-  const content: string | ContentBlock[] =
-    documents && documents.length > 0
-      ? [{ type: 'text', text: user }, ...documents]
-      : user;
-
   let response: GenerationResponse;
   try {
     response = await c.messages.create({
       model: env.anthropicModel,
       max_tokens: env.anthropicMaxTokens,
       system,
-      messages: [{ role: 'user', content }],
+      messages: [{ role: 'user', content: buildUserContent(user, documents) }],
     });
   } catch (err) {
     // Log only the error message server-side (not the raw error object, which
@@ -128,19 +199,91 @@ export async function generateText(
     throw new AppError('AI generation request failed upstream', 502);
   }
 
-  const text = response.content
-    .filter((block) => block.type === 'text')
-    .map((block) => block.text ?? '')
-    .join('\n')
-    .trim();
+  return parseGenerationResponse(response);
+}
 
-  if (!text) {
-    throw new AppError('AI generation returned an empty response', 502);
+/**
+ * Submits a single generation request to the Anthropic Message Batches API
+ * (async, ~50% cheaper) and returns the batch id to persist on the run. The
+ * `customId` (the PhaseExecution id) lets the poller match the result back to
+ * the run. Content is built identically to {@link generateText}.
+ * @param client - Optional injected batch client (used by tests).
+ * @throws {AppError} 503 if unconfigured, 502 if the batch could not be created.
+ */
+export async function submitBatch(
+  system: string,
+  user: string,
+  customId: string,
+  client?: BatchGenerationClient,
+  documents?: DocumentBlock[],
+): Promise<string> {
+  const c = client ?? (await getDefaultClient());
+  try {
+    const batch = await c.beta.messages.batches.create({
+      requests: [
+        {
+          custom_id: customId,
+          params: {
+            model: env.anthropicModel,
+            max_tokens: env.anthropicMaxTokens,
+            system,
+            messages: [{ role: 'user', content: buildUserContent(user, documents) }],
+          },
+        },
+      ],
+    });
+    return batch.id;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.error('Anthropic batch submit error:', message);
+    throw new AppError('AI batch submission failed upstream', 502);
   }
+}
 
-  return {
-    text,
-    inputTokens: response.usage?.input_tokens ?? null,
-    outputTokens: response.usage?.output_tokens ?? null,
-  };
+/**
+ * Retrieves the current state of a submitted batch. Wraps upstream errors so a
+ * transient failure surfaces as a 502 and the poller leaves the run QUEUED.
+ * @param client - Optional injected batch client (used by tests).
+ */
+export async function retrieveBatch(
+  batchId: string,
+  client?: BatchGenerationClient,
+): Promise<BatchHandle> {
+  const c = client ?? (await getDefaultClient());
+  try {
+    return await c.beta.messages.batches.retrieve(batchId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.error('Anthropic batch retrieve error:', message);
+    throw new AppError('AI batch status check failed upstream', 502);
+  }
+}
+
+/**
+ * Fetches and collects all per-request results of an ended batch into an array
+ * (batches here hold a single request, so this is tiny). The SDK returns a
+ * streaming JSONL decoder; we drain it.
+ * @param client - Optional injected batch client (used by tests).
+ */
+export async function collectBatchResults(
+  batchId: string,
+  client?: BatchGenerationClient,
+): Promise<BatchIndividualResponse[]> {
+  const c = client ?? (await getDefaultClient());
+  let stream: AsyncIterable<BatchIndividualResponse> | Iterable<BatchIndividualResponse>;
+  try {
+    stream = await c.beta.messages.batches.results(batchId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.error('Anthropic batch results error:', message);
+    throw new AppError('AI batch results fetch failed upstream', 502);
+  }
+  const out: BatchIndividualResponse[] = [];
+  for await (const item of stream) {
+    out.push(item);
+  }
+  return out;
 }

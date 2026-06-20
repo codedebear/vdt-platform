@@ -25,7 +25,14 @@ import { can, Role } from '../domain/permissions';
 import { buildPrompt, PriorOutput } from '../domain/prompts';
 import { approxTokensFromChars, estimateCostUsd } from '../domain/pricing';
 import { isBudgetExhausted } from '../domain/budget';
-import { generateText, GenerationClient } from './generation.service';
+import {
+  generateText,
+  submitBatch,
+  GenerationClient,
+  BatchGenerationClient,
+  DocumentBlock,
+} from './generation.service';
+import { BatchOutcome } from '../domain/batch';
 import { prepareAttachments } from './attachmentContent.service';
 
 /** Truncates a string to at most `max` characters, marking where it was cut. */
@@ -171,20 +178,24 @@ export async function reviewPhase(
   });
 }
 
+/** The per-million-token price override assembled from env (0 = use the table). */
+function priceOverrideFromEnv() {
+  return {
+    inputPerMTok: env.anthropicPriceInputPerMTok,
+    outputPerMTok: env.anthropicPriceOutputPerMTok,
+  };
+}
+
 /**
- * Generates this run's output with the Claude API instead of receiving it
- * manually, then moves the run to AWAITING_REVIEW. The prompt is built from the
- * project context plus the approved outputs of earlier phases. Permitted for the
- * phase's worker role while the run is IN_PROGRESS or CHANGES_REQUESTED.
- * @param client - Optional injected generation client (used by tests).
- * @throws {AppError} 404 if missing, 403 if the role may not produce this phase,
- *   409 on an invalid status, 502/503 on generation failure.
+ * Shared preparation for both the synchronous and batch generation paths: loads
+ * the run with its attachments + the project's approved prior outputs, enforces
+ * worker-role authorization and the IN_PROGRESS/CHANGES_REQUESTED status guard,
+ * applies a cheap early budget reject, builds the prompt, and folds in
+ * attachments (PDFs as document blocks; other types extracted to text). Has no
+ * side effects beyond reading, so a 403/409/402/422 here consumes no budget.
+ * @throws {AppError} 404 missing, 403 role, 409 status, 402 budget, 422 bad file.
  */
-export async function generatePhaseOutput(
-  executionId: string,
-  actor: Actor,
-  client?: GenerationClient,
-) {
+async function prepareGenerationContext(executionId: string, actor: Actor) {
   const execution = await prisma.phaseExecution.findUnique({
     where: { id: executionId },
     include: {
@@ -218,15 +229,9 @@ export async function generatePhaseOutput(
     );
   }
 
-  const projectId = execution.project.id;
-  const priceOverride = {
-    inputPerMTok: env.anthropicPriceInputPerMTok,
-    outputPerMTok: env.anthropicPriceOutputPerMTok,
-  };
-
   // Cheap early reject if the project's budget is already fully spent (avoids
   // building the prompt). The authoritative, race-safe check is in the reserve
-  // transaction below.
+  // transaction in each caller.
   if (isBudgetExhausted(execution.project.spentUsd, execution.project.budgetUsd)) {
     throw new AppError(
       `This project has reached its AI budget ($${execution.project.budgetUsd?.toFixed(2)}); ask an admin to raise it`,
@@ -264,20 +269,30 @@ export async function generatePhaseOutput(
       ? `${user}\n\n## Attached documents\n${prepared.textSections.join('\n\n')}`
       : user;
 
-  // Reserve an upper-bound cost for this call (output is capped at max_tokens;
-  // input is over-estimated from the prompt length). Claiming the generation
-  // slot and reserving the budget happen together in a Serializable transaction,
-  // so two concurrent generations cannot both pass a stale read and overshoot
-  // the budget — one is aborted (P2034) and retried. The reserve is settled to
-  // the actual cost after the call (or released if it fails), so the budget is a
-  // true cap that errs toward under-spending, never over.
-  const reserveUsd = estimateCostUsd(
-    env.anthropicModel,
-    approxTokensFromChars(system.length + userPrompt.length),
-    env.anthropicMaxTokens,
-    priceOverride,
-  );
+  return {
+    projectId: execution.project.id,
+    system,
+    userPrompt,
+    documents: prepared.documents as DocumentBlock[],
+    priceOverride: priceOverrideFromEnv(),
+  };
+}
 
+/**
+ * Atomically claims a generation slot and reserves an upper-bound budget for a
+ * run, in one Serializable transaction. Two concurrent generations cannot both
+ * pass a stale budget read and overshoot — one is aborted (P2034) and surfaced
+ * as a 409 to retry. The per-run cap counts *attempts*: the slot is claimed here
+ * and never refunded, so a failed call cannot leak a slot on a crash. Used by
+ * both the synchronous and batch paths so the rule lives in one place.
+ * @throws {AppError} 404 missing project, 402 over budget, 429 cap reached,
+ *   409 on a serialization conflict.
+ */
+async function reserveGenerationSlot(
+  projectId: string,
+  executionId: string,
+  reserveUsd: number,
+): Promise<void> {
   try {
     await prisma.$transaction(
       async (tx) => {
@@ -294,9 +309,6 @@ export async function generatePhaseOutput(
             402,
           );
         }
-        // Cap how many times a single run may be (re)generated. The cap counts
-        // generation *attempts*: the slot is claimed here and not refunded on a
-        // failed call, so there is no rollback path to leak a slot on a crash.
         const claim = await tx.phaseExecution.updateMany({
           where: {
             id: executionId,
@@ -324,16 +336,56 @@ export async function generatePhaseOutput(
     }
     throw err;
   }
+}
+
+/** Releases a previously reserved budget amount back to a project (best-effort).
+ * The generation slot is intentionally not refunded — the cap counts attempts. */
+async function releaseReservation(projectId: string, reserveUsd: number): Promise<void> {
+  await prisma.project
+    .update({ where: { id: projectId }, data: { spentUsd: { decrement: reserveUsd } } })
+    .catch(() => undefined);
+}
+
+/**
+ * Generates this run's output with the Claude API instead of receiving it
+ * manually, then moves the run to AWAITING_REVIEW. The prompt is built from the
+ * project context plus the approved outputs of earlier phases. Permitted for the
+ * phase's worker role while the run is IN_PROGRESS or CHANGES_REQUESTED.
+ * @param client - Optional injected generation client (used by tests).
+ * @throws {AppError} 404 if missing, 403 if the role may not produce this phase,
+ *   409 on an invalid status, 502/503 on generation failure.
+ */
+export async function generatePhaseOutput(
+  executionId: string,
+  actor: Actor,
+  client?: GenerationClient,
+) {
+  const { projectId, system, userPrompt, documents, priceOverride } =
+    await prepareGenerationContext(executionId, actor);
+
+  // Reserve an upper-bound cost for this call (output is capped at max_tokens;
+  // input is over-estimated from the prompt length). Claiming the generation
+  // slot and reserving the budget happen together in a Serializable transaction,
+  // so two concurrent generations cannot both pass a stale read and overshoot
+  // the budget — one is aborted (P2034) and retried. The reserve is settled to
+  // the actual cost after the call (or released if it fails), so the budget is a
+  // true cap that errs toward under-spending, never over.
+  const reserveUsd = estimateCostUsd(
+    env.anthropicModel,
+    approxTokensFromChars(system.length + userPrompt.length),
+    env.anthropicMaxTokens,
+    priceOverride,
+  );
+
+  await reserveGenerationSlot(projectId, executionId, reserveUsd);
 
   let result;
   try {
-    result = await generateText(system, userPrompt, client, prepared.documents);
+    result = await generateText(system, userPrompt, client, documents);
   } catch (err) {
     // Release the budget reservation (the call did not complete). The generation
     // slot is intentionally kept — the per-run cap counts attempts.
-    await prisma.project
-      .update({ where: { id: projectId }, data: { spentUsd: { decrement: reserveUsd } } })
-      .catch(() => undefined);
+    await releaseReservation(projectId, reserveUsd);
     throw err;
   }
 
@@ -363,4 +415,128 @@ export async function generatePhaseOutput(
     }),
   ]);
   return updated;
+}
+
+/**
+ * Submits this run's generation to the Anthropic Message Batches API (async,
+ * ~50% cheaper) and moves the run to QUEUED. The background poller later
+ * retrieves the result and advances the run to AWAITING_REVIEW or FAILED. Shares
+ * authorization, status, prompt, attachment and budget-reservation logic with
+ * {@link generatePhaseOutput}; only the call mode differs. The budget is
+ * reserved at the batch (discounted) rate; the poller settles it to the actual
+ * cost. Permitted for the phase's worker role while IN_PROGRESS/CHANGES_REQUESTED.
+ * @param client - Optional injected batch client (used by tests).
+ * @throws {AppError} 404 missing, 403 role, 409 status/conflict, 402 budget,
+ *   422 bad attachment, 502/503 on batch submission failure.
+ */
+export async function generatePhaseOutputBatch(
+  executionId: string,
+  actor: Actor,
+  client?: BatchGenerationClient,
+) {
+  const { projectId, system, userPrompt, documents, priceOverride } =
+    await prepareGenerationContext(executionId, actor);
+
+  // Reserve at the batch (discounted) rate so the reservation tracks what the
+  // run will actually cost; the poller settles to the real usage on completion.
+  const reserveUsd = estimateCostUsd(
+    env.anthropicModel,
+    approxTokensFromChars(system.length + userPrompt.length),
+    env.anthropicMaxTokens,
+    priceOverride,
+    env.anthropicBatchPriceFactor,
+  );
+
+  await reserveGenerationSlot(projectId, executionId, reserveUsd);
+
+  let batchId: string;
+  try {
+    // The run id is the batch request's custom_id, so the poller can match the
+    // result back to this run.
+    batchId = await submitBatch(system, userPrompt, executionId, client, documents);
+  } catch (err) {
+    await releaseReservation(projectId, reserveUsd);
+    throw err;
+  }
+
+  // Park the run as QUEUED, persisting the batch id (so the poller — and a
+  // restart — can find and finish it) and the reserved cost (settled later).
+  return prisma.phaseExecution.update({
+    where: { id: executionId },
+    data: {
+      status: 'QUEUED',
+      batchId,
+      costUsd: reserveUsd,
+      inputTokens: null,
+      outputTokens: null,
+    },
+  });
+}
+
+/** A QUEUED run as the poller needs it to settle: identity, owning project, and
+ * the budget amount reserved at submit time (held transiently in costUsd). */
+export interface QueuedRunRef {
+  id: string;
+  projectId: string;
+  reservedUsd: number;
+}
+
+/**
+ * Applies the outcome of a finished batch to a QUEUED run and reconciles the
+ * project's budget. On success the run becomes AWAITING_REVIEW (a human review
+ * gate, exactly like a synchronous generation) and the reservation is settled to
+ * the actual (batch-rate) cost; on failure the run becomes FAILED and the full
+ * reservation is released. The status guard (`status: 'QUEUED'`) makes this
+ * idempotent: overlapping poller ticks cannot double-settle a run or double-
+ * adjust the budget. Called only by the poller (no user authorization here — the
+ * authorization happened at submit time).
+ */
+export async function settleBatchRun(
+  run: QueuedRunRef,
+  outcome: BatchOutcome,
+  result?: { text: string; inputTokens: number | null; outputTokens: number | null },
+): Promise<void> {
+  if (outcome.succeeded && result) {
+    const actualCostUsd = estimateCostUsd(
+      env.anthropicModel,
+      result.inputTokens,
+      result.outputTokens,
+      priceOverrideFromEnv(),
+      env.anthropicBatchPriceFactor,
+    );
+    await prisma.$transaction(async (tx) => {
+      const claimed = await tx.phaseExecution.updateMany({
+        where: { id: run.id, status: 'QUEUED' },
+        data: {
+          output: result.text,
+          status: 'AWAITING_REVIEW',
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          costUsd: actualCostUsd,
+        },
+      });
+      if (claimed.count === 1) {
+        // Net spend changes by exactly (actual − reserved).
+        await tx.project.update({
+          where: { id: run.projectId },
+          data: { spentUsd: { increment: actualCostUsd - run.reservedUsd } },
+        });
+      }
+    });
+    return;
+  }
+
+  // Failure: mark FAILED and release the whole reservation.
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.phaseExecution.updateMany({
+      where: { id: run.id, status: 'QUEUED' },
+      data: { status: 'FAILED', reviewNote: outcome.reason, costUsd: 0 },
+    });
+    if (claimed.count === 1) {
+      await tx.project.update({
+        where: { id: run.projectId },
+        data: { spentUsd: { decrement: run.reservedUsd } },
+      });
+    }
+  });
 }

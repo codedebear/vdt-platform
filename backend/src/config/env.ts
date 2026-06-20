@@ -48,6 +48,17 @@ const envSchema = z.object({
   // Max characters of extracted text included per non-PDF attachment when
   // generating, to cap token cost. Extracted text beyond this is truncated.
   ATTACHMENT_TEXT_CHAR_CAP: z.coerce.number().int().positive().default(100000),
+  // Anthropic Message Batches API (BE-BATCH-1): async generation at ~50% cost.
+  // BATCH_ENABLED gates both the batch-submit path and the background poller.
+  BATCH_ENABLED: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // How often (ms) the in-process poller scans QUEUED runs for finished batches.
+  BATCH_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(30000),
+  // Fraction of the standard token price charged for batch runs (Anthropic bills
+  // batches at 50%). Used for the budget reservation + settle on batch runs.
+  ANTHROPIC_BATCH_PRICE_FACTOR: z.coerce.number().positive().max(1).default(0.5),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -82,4 +93,7 @@ export const env = {
   attachmentMaxTotalMb: parsed.data.ATTACHMENT_MAX_TOTAL_MB,
   attachmentRateLimitPerMin: parsed.data.ATTACHMENT_RATE_LIMIT_PER_MIN,
   attachmentTextCharCap: parsed.data.ATTACHMENT_TEXT_CHAR_CAP,
+  batchEnabled: parsed.data.BATCH_ENABLED,
+  batchPollIntervalMs: parsed.data.BATCH_POLL_INTERVAL_MS,
+  anthropicBatchPriceFactor: parsed.data.ANTHROPIC_BATCH_PRICE_FACTOR,
 };
