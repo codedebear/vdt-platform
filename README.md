@@ -77,6 +77,7 @@ gitignored — copy `.env.example` and fill it in.
 | `ATTACHMENT_MAX_PER_RUN` | — | `5` | Max number of attachments per phase run. |
 | `ATTACHMENT_MAX_TOTAL_MB` | — | `25` | Max combined size of a run's attachments. |
 | `ATTACHMENT_RATE_LIMIT_PER_MIN` | — | `20` | Per-user rate limit on attachment uploads (requests/minute). |
+| `ATTACHMENT_TEXT_CHAR_CAP` | — | `100000` | Max characters of extracted text included per non-PDF attachment when generating (caps token cost). |
 | `FRONTEND_PORT` | — | `8080` | Host port the frontend (nginx) container is published on. |
 | `VITE_API_BASE_URL` | — | *(empty)* | API origin baked into the SPA at build time. Leave empty for same-origin (nginx proxies `/api`); set only if the API is on a different origin. |
 
@@ -255,8 +256,11 @@ All routes require authentication and act on an existing execution id.
 
 #### `POST /api/phases/:executionId/generate`
 Generates this run's output via Claude, then moves the run to `AWAITING_REVIEW`.
-The prompt is built from project context plus the approved outputs of earlier
-phases. **Per-user rate-limited** and **capped per run** (`GENERATE_MAX_PER_RUN`).
+The prompt is built from project context, the approved outputs of earlier phases,
+and **the run's attachments** — PDFs are sent to Claude as document blocks (read
+directly, including scanned pages); spreadsheets, Word and text files are
+extracted to text and appended to the prompt. **Per-user rate-limited** and
+**capped per run** (`GENERATE_MAX_PER_RUN`).
 **Request body:** none.
 **Response:** `200 OK` with the updated execution (output + token usage).
 Errors: `403` role not allowed, `404` missing, `409` invalid status,
@@ -442,9 +446,11 @@ headers, and the `/api` + `/health` proxy path; run with
 `BASE_URL=http://localhost:8080 ./qa/smoke-frontend.sh`), `smoke-fe3.sh`
 (the phase-lifecycle API contract the project-detail UI drives — start → submit
 → review plus role/status guards; uses the free manual path, with the real AI
-generate call gated behind `GEN_TEST=1`), and `smoke-doc1.sh` (attachment upload
+generate call gated behind `GEN_TEST=1`), `smoke-doc1.sh` (attachment upload
 API — valid upload + list + delete, plus the unsupported-type / oversized /
-wrong-role / closed-run guards; no Claude tokens spent).
+wrong-role / closed-run guards; no Claude tokens spent), and `smoke-doc2.sh`
+(generation reads an attached file — attach + generate, with the real Claude call
+gated behind a configured `ANTHROPIC_API_KEY`).
 
 ## Deployment
 
