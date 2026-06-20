@@ -17,6 +17,7 @@ import { api, ApiError } from '../lib/api';
 import type { PhaseExecution } from '../lib/types';
 import { formatDateTime } from '../lib/format';
 import { Alert, Button, Card, PHASE_LABELS, PhaseStatusBadge, Textarea } from './ui';
+import AttachmentsPanel from './AttachmentsPanel';
 
 interface PhaseExecutionCardProps {
   execution: PhaseExecution;
@@ -116,6 +117,9 @@ export default function PhaseExecutionCard({
           )}
         </div>
       )}
+
+      {/* Attachments the AI reads as context; editable by the worker while open. */}
+      <AttachmentsPanel executionId={execution.id} editable={isProducible && canWork} />
 
       {error && (
         <div className="mt-3">

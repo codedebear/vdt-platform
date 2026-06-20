@@ -83,6 +83,19 @@ export interface CreateProjectInput {
   track: Track;
 }
 
+/**
+ * Public metadata for a phase-run attachment, as returned by the
+ * /api/phases/:id/attachments endpoints. Never includes the file bytes.
+ */
+export interface AttachmentMeta {
+  id: string;
+  executionId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
 /** A user as returned by the admin /api/users endpoints (no password hash). */
 export interface AdminUser {
   id: string;

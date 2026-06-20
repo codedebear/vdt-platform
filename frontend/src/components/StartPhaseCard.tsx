@@ -6,11 +6,12 @@
  * viewer's role may start are offered as actions; if a phase is ready but belongs
  * to another role, a quiet hint is shown instead of a button.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import type { PhaseType, ProjectDetail, Role } from '../lib/types';
 import { can, PHASE_WORKER_ROLE } from '../lib/permissions';
 import { getStartablePhases } from '../lib/workflow';
+import { ACCEPT_ATTR, formatBytes, validateNewFiles } from '../lib/attachments';
 import { Alert, Button, Card, Field, PHASE_LABELS, ROLE_LABELS, Select, Textarea } from './ui';
 
 interface StartPhaseCardProps {
@@ -31,8 +32,10 @@ export default function StartPhaseCard({ project, role, onChanged }: StartPhaseC
 
   const [selected, setSelected] = useState<PhaseType | ''>('');
   const [input, setInput] = useState('');
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // Nothing startable at all → let the parent show "all phases complete".
   if (startable.length === 0) return null;
@@ -53,16 +56,53 @@ export default function StartPhaseCard({ project, role, onChanged }: StartPhaseC
 
   const phase = (selected || mine[0]) as PhaseType;
 
+  function addFiles(picked: FileList | null): void {
+    if (!picked || picked.length === 0) return;
+    const next = [...files, ...Array.from(picked)];
+    setError(null);
+    const problem = validateNewFiles(Array.from(picked), {
+      count: files.length,
+      totalBytes: files.reduce((sum, f) => sum + f.size, 0),
+    });
+    if (problem) {
+      setError(problem);
+    } else {
+      setFiles(next);
+    }
+    if (fileRef.current) fileRef.current.value = '';
+  }
+
+  function removeFile(index: number): void {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
   async function start(): Promise<void> {
     setBusy(true);
     setError(null);
     try {
-      await api.startPhase(project.id, {
+      const run = await api.startPhase(project.id, {
         phaseType: phase,
         input: input.trim() || undefined,
       });
+      // Run exists now; attach staged files to it. If this fails the run still
+      // started, so report it softly and let the user retry from the run card.
+      if (files.length > 0) {
+        try {
+          await api.uploadAttachments(run.id, files);
+        } catch (err) {
+          setError(
+            `Phase started, but attaching files failed: ${
+              err instanceof ApiError ? err.message : 'upload error'
+            }. You can attach them from the run below.`,
+          );
+          setFiles([]);
+          await onChanged();
+          return;
+        }
+      }
       setInput('');
       setSelected('');
+      setFiles([]);
       await onChanged();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not start the phase');
@@ -101,6 +141,54 @@ export default function StartPhaseCard({ project, role, onChanged }: StartPhaseC
           placeholder="Optional context for this phase…"
         />
       </Field>
+
+      <div>
+        <input
+          ref={fileRef}
+          type="file"
+          multiple
+          accept={ACCEPT_ATTR}
+          className="hidden"
+          onChange={(e) => addFiles(e.target.files)}
+        />
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => fileRef.current?.click()}
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-600 hover:text-brand-700 disabled:opacity-50"
+        >
+          <span aria-hidden>📎</span> Attach files
+        </button>
+        <span className="ml-2 text-xs text-slate-400">
+          PDF, Word, Excel, CSV, text — the AI reads them as context.
+        </span>
+
+        {files.length > 0 && (
+          <ul className="mt-2 flex flex-wrap gap-2">
+            {files.map((f, i) => (
+              <li
+                key={`${f.name}-${i}`}
+                className="inline-flex max-w-full items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700"
+                title={`${f.name} — ${formatBytes(f.size)}`}
+              >
+                <span className="truncate" style={{ maxWidth: '14rem' }}>
+                  {f.name}
+                </span>
+                <span className="shrink-0 text-slate-400">{formatBytes(f.size)}</span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => removeFile(i)}
+                  aria-label={`Remove ${f.name}`}
+                  className="shrink-0 text-slate-400 hover:text-red-600 disabled:opacity-50"
+                >
+                  ✕
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {error && <Alert>{error}</Alert>}
 

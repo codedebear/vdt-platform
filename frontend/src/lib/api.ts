@@ -8,6 +8,7 @@
  */
 import type {
   AdminUser,
+  AttachmentMeta,
   AuthResponse,
   CreateProjectInput,
   PhaseExecution,
@@ -60,14 +61,18 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = {};
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+
+  // For multipart uploads pass the FormData through untouched: the browser sets
+  // the multipart Content-Type (with boundary) itself, so we must NOT set it.
+  const isForm = body instanceof FormData;
+  if (body !== undefined && !isForm) headers['Content-Type'] = 'application/json';
 
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
       method,
       headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
     });
   } catch {
     throw new ApiError('Network error — could not reach the server', 0);
@@ -150,6 +155,30 @@ export const api = {
     request<PhaseExecution>(`/api/phases/${executionId}/review`, {
       method: 'POST',
       body: input,
+    }),
+
+  /** List the metadata of a run's attachments (no file bytes). */
+  listAttachments: (executionId: string) =>
+    request<AttachmentMeta[]>(`/api/phases/${executionId}/attachments`),
+
+  /**
+   * Upload one or more files to a run (multipart field `files`). Returns the
+   * run's full attachment list (newest included). Only allowed while the run is
+   * IN_PROGRESS or CHANGES_REQUESTED and for the phase's worker role.
+   */
+  uploadAttachments: (executionId: string, files: File[]) => {
+    const form = new FormData();
+    for (const file of files) form.append('files', file);
+    return request<AttachmentMeta[]>(`/api/phases/${executionId}/attachments`, {
+      method: 'POST',
+      body: form,
+    });
+  },
+
+  /** Delete one attachment from a run. */
+  deleteAttachment: (executionId: string, attachmentId: string) =>
+    request<void>(`/api/phases/${executionId}/attachments/${attachmentId}`, {
+      method: 'DELETE',
     }),
 
   /** List all users (SUPER_ADMIN only). */
