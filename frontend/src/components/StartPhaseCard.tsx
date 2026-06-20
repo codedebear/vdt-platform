@@ -11,7 +11,8 @@ import { api, ApiError } from '../lib/api';
 import type { PhaseType, ProjectDetail, Role } from '../lib/types';
 import { can, PHASE_WORKER_ROLE } from '../lib/permissions';
 import { getStartablePhases } from '../lib/workflow';
-import { ACCEPT_ATTR, formatBytes, validateNewFiles } from '../lib/attachments';
+import { acceptAttr, formatBytes, validateNewFiles } from '../lib/attachments';
+import { useAttachmentConfig } from '../lib/config';
 import { Alert, Button, Card, Field, PHASE_LABELS, ROLE_LABELS, Select, Textarea } from './ui';
 
 interface StartPhaseCardProps {
@@ -30,6 +31,7 @@ export default function StartPhaseCard({ project, role, onChanged }: StartPhaseC
     [startable, role],
   );
 
+  const config = useAttachmentConfig();
   const [selected, setSelected] = useState<PhaseType | ''>('');
   const [input, setInput] = useState('');
   const [files, setFiles] = useState<File[]>([]);
@@ -60,10 +62,11 @@ export default function StartPhaseCard({ project, role, onChanged }: StartPhaseC
     if (!picked || picked.length === 0) return;
     const next = [...files, ...Array.from(picked)];
     setError(null);
-    const problem = validateNewFiles(Array.from(picked), {
-      count: files.length,
-      totalBytes: files.reduce((sum, f) => sum + f.size, 0),
-    });
+    const problem = validateNewFiles(
+      Array.from(picked),
+      { count: files.length, totalBytes: files.reduce((sum, f) => sum + f.size, 0) },
+      config,
+    );
     if (problem) {
       setError(problem);
     } else {
@@ -147,7 +150,7 @@ export default function StartPhaseCard({ project, role, onChanged }: StartPhaseC
           ref={fileRef}
           type="file"
           multiple
-          accept={ACCEPT_ATTR}
+          accept={acceptAttr(config)}
           className="hidden"
           onChange={(e) => addFiles(e.target.files)}
         />

@@ -123,6 +123,13 @@ EXEC="$(jget "['id']")"
 printf 'SRS: build a todo API with CRUD endpoints.' > "$TMP/spec.txt"
 printf 'col1,col2\n1,2\n'                            > "$TMP/data.csv"
 
+# config endpoint the FE reads for limits + accepted types (no auth needed)
+req GET /api/config ""
+[ "$RESP_CODE" = "200" ] && ok "GET /api/config -> 200" || bad "config -> $RESP_CODE (expected 200)"
+[ -n "$(jget "['attachments']['maxFileMb']")" ] && ok "config exposes attachments.maxFileMb" || bad "config missing maxFileMb"
+printf '%s' "$RESP_BODY" | python3 -c 'import sys,json;a=json.load(sys.stdin)["attachments"];exit(0 if ".pdf" in a["acceptedExtensions"] else 1)' 2>/dev/null \
+  && ok "config acceptedExtensions includes .pdf" || bad "config acceptedExtensions missing .pdf"
+
 # upload-on-start: the two staged files attach to the freshly created run
 upload "/api/phases/$EXEC/attachments" "$SUPER" "$TMP/spec.txt" "$TMP/data.csv"
 [ "$RESP_CODE" = "201" ] && ok "upload to new run (multipart 'files') -> 201" || bad "upload -> $RESP_CODE (expected 201)"
@@ -130,6 +137,17 @@ CNT="$(printf '%s' "$RESP_BODY" | python3 -c 'import sys,json;print(len(json.loa
 [ "$CNT" = "2" ] && ok "response lists 2 attachments" || bad "expected 2, got $CNT"
 printf '%s' "$RESP_BODY" | grep -q '"data"' && bad "response leaked file bytes" || ok "metadata only (no bytes) — UI never sees data"
 ATT_ID="$(printf '%s' "$RESP_BODY" | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["id"])' 2>/dev/null)"
+
+# project detail now embeds attachment metadata per run (no extra per-card GET)
+req GET "/api/projects/$PID" "$OWNER"
+printf '%s' "$RESP_BODY" | python3 -c '
+import sys,json
+p=json.load(sys.stdin)
+ex=next((e for e in p["executions"] if e["id"]=="'"$EXEC"'"), None)
+atts=(ex or {}).get("attachments")
+ok = isinstance(atts,list) and len(atts)==2 and all("data" not in a for a in atts)
+exit(0 if ok else 1)' 2>/dev/null \
+  && ok "project detail embeds 2 attachments (metadata only)" || bad "project detail did not embed attachment metadata"
 
 # AttachmentsPanel list-on-mount
 req GET "/api/phases/$EXEC/attachments" "$SUPER"

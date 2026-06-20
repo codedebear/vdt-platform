@@ -119,7 +119,11 @@ export default function PhaseExecutionCard({
       )}
 
       {/* Attachments the AI reads as context; editable by the worker while open. */}
-      <AttachmentsPanel executionId={execution.id} editable={isProducible && canWork} />
+      <AttachmentsPanel
+        executionId={execution.id}
+        initial={execution.attachments ?? []}
+        editable={isProducible && canWork}
+      />
 
       {error && (
         <div className="mt-3">

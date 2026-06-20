@@ -46,6 +46,13 @@ const TYPE_RULES: TypeRule[] = [
   },
 ];
 
+/**
+ * Every accepted file extension, flattened from {@link TYPE_RULES}. This is the
+ * single source of truth the API exposes to clients (via the config endpoint)
+ * so the frontend never has to hard-code the list.
+ */
+export const ACCEPTED_EXTENSIONS: string[] = TYPE_RULES.flatMap((r) => r.extensions);
+
 /** Lower-cased file extension including the dot, or '' when there is none. */
 export function fileExtension(filename: string): string {
   const dot = filename.lastIndexOf('.');

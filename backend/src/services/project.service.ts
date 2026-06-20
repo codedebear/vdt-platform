@@ -40,7 +40,26 @@ export async function listProjects() {
 export async function getProjectOrThrow(projectId: string) {
   const project = await prisma.project.findUnique({
     where: { id: projectId },
-    include: { executions: { orderBy: { createdAt: 'asc' } } },
+    include: {
+      executions: {
+        orderBy: { createdAt: 'asc' },
+        // Attachment metadata only (never the `data` bytes) so the project
+        // detail screen renders attachments without one request per run.
+        include: {
+          attachments: {
+            select: {
+              id: true,
+              executionId: true,
+              filename: true,
+              mimeType: true,
+              sizeBytes: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      },
+    },
   });
   if (!project) {
     throw new AppError('Project not found', 404);

@@ -8,6 +8,7 @@
  */
 import type {
   AdminUser,
+  AppConfig,
   AttachmentMeta,
   AuthResponse,
   CreateProjectInput,
@@ -156,6 +157,9 @@ export const api = {
       method: 'POST',
       body: input,
     }),
+
+  /** Public runtime config (attachment limits + accepted types). */
+  getConfig: () => request<AppConfig>('/api/config'),
 
   /** List the metadata of a run's attachments (no file bytes). */
   listAttachments: (executionId: string) =>

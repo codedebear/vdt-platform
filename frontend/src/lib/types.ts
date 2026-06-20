@@ -52,6 +52,8 @@ export interface PhaseExecution {
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Present on the project-detail response; metadata only, never bytes. */
+  attachments?: AttachmentMeta[];
 }
 
 /** Core project fields, as returned by POST /api/projects (create). */
@@ -94,6 +96,19 @@ export interface AttachmentMeta {
   mimeType: string;
   sizeBytes: number;
   createdAt: string;
+}
+
+/** Effective attachment limits + accepted types, as served by GET /api/config. */
+export interface AttachmentConfig {
+  maxFileMb: number;
+  maxPerRun: number;
+  maxTotalMb: number;
+  acceptedExtensions: string[];
+}
+
+/** Public runtime config served by GET /api/config. */
+export interface AppConfig {
+  attachments: AttachmentConfig;
 }
 
 /** A user as returned by the admin /api/users endpoints (no password hash). */

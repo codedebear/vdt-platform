@@ -1,36 +1,11 @@
 /**
- * Client-side attachment helpers: accepted types, human-readable sizes, and a
- * pre-upload validation that mirrors the backend's limits.
- *
- * NOTE: the backend (`domain/attachments.ts` + the `ATTACHMENT_*` env caps) is
- * the authoritative gate — these constants mirror its DEFAULT values purely for
- * a fast, friendly UX (block obviously-bad files before a round-trip). If the
- * server is configured with different caps, its error message is surfaced
- * verbatim. This mirror is the known FE/BE drift trade-off already tracked for
- * permissions.ts / workflow.ts; revisit if caps become configurable per env.
+ * Client-side attachment helpers: human-readable sizes, the file-picker accept
+ * attribute, and a pre-upload validation — all driven by the server's
+ * AttachmentConfig (see lib/config.ts) so the limits and accepted types are
+ * never hard-coded here. The backend remains the authoritative gate; this is a
+ * fast, friendly pre-check, and any server error is still surfaced verbatim.
  */
-
-/** Default per-file cap (mirrors ATTACHMENT_MAX_FILE_MB). */
-export const ATTACHMENT_MAX_FILE_MB = 10;
-/** Default per-run file count cap (mirrors ATTACHMENT_MAX_PER_RUN). */
-export const ATTACHMENT_MAX_PER_RUN = 5;
-/** Default per-run total size cap (mirrors ATTACHMENT_MAX_TOTAL_MB). */
-export const ATTACHMENT_MAX_TOTAL_MB = 25;
-
-/** Accepted file extensions (mirrors the backend TYPE_RULES). */
-export const ACCEPTED_EXTENSIONS = [
-  '.pdf',
-  '.xlsx',
-  '.xls',
-  '.docx',
-  '.txt',
-  '.csv',
-  '.md',
-  '.markdown',
-] as const;
-
-/** Value for an <input type="file"> `accept` attribute. */
-export const ACCEPT_ATTR = ACCEPTED_EXTENSIONS.join(',');
+import type { AttachmentConfig } from './types';
 
 const MB = 1024 * 1024;
 
@@ -41,9 +16,14 @@ export function fileExtension(filename: string): string {
   return filename.slice(dot).toLowerCase();
 }
 
-/** Whether a file name has an accepted extension. */
-export function isAcceptedFilename(filename: string): boolean {
-  return (ACCEPTED_EXTENSIONS as readonly string[]).includes(fileExtension(filename));
+/** Whether a file name has one of the server's accepted extensions. */
+export function isAcceptedFilename(filename: string, accepted: string[]): boolean {
+  return accepted.includes(fileExtension(filename));
+}
+
+/** Value for an <input type="file"> `accept` attribute, from the config. */
+export function acceptAttr(config: AttachmentConfig): string {
+  return config.acceptedExtensions.join(',');
 }
 
 /** Format a byte count as a compact human-readable string. */
@@ -54,33 +34,35 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
- * Validates a set of incoming files against what a run already holds. Returns
- * the first human-readable error, or `null` when the batch is acceptable.
- * Mirrors the backend's per-file size, file count, and total size checks.
+ * Validates a set of incoming files against what a run already holds, using the
+ * server-provided limits. Returns the first human-readable error, or `null`
+ * when the batch is acceptable. Mirrors the backend's per-file size, count, and
+ * total-size checks.
  */
 export function validateNewFiles(
   incoming: File[],
   existing: { count: number; totalBytes: number },
+  config: AttachmentConfig,
 ): string | null {
   if (incoming.length === 0) return null;
 
-  const bad = incoming.find((f) => !isAcceptedFilename(f.name));
+  const bad = incoming.find((f) => !isAcceptedFilename(f.name, config.acceptedExtensions));
   if (bad) {
-    return `Unsupported file type: ${bad.name}. Allowed: ${ACCEPTED_EXTENSIONS.join(', ')}`;
+    return `Unsupported file type: ${bad.name}. Allowed: ${config.acceptedExtensions.join(', ')}`;
   }
 
-  const oversized = incoming.find((f) => f.size > ATTACHMENT_MAX_FILE_MB * MB);
+  const oversized = incoming.find((f) => f.size > config.maxFileMb * MB);
   if (oversized) {
-    return `"${oversized.name}" is too large — each file must be at most ${ATTACHMENT_MAX_FILE_MB} MB.`;
+    return `"${oversized.name}" is too large — each file must be at most ${config.maxFileMb} MB.`;
   }
 
-  if (existing.count + incoming.length > ATTACHMENT_MAX_PER_RUN) {
-    return `A run may have at most ${ATTACHMENT_MAX_PER_RUN} attachments.`;
+  if (existing.count + incoming.length > config.maxPerRun) {
+    return `A run may have at most ${config.maxPerRun} attachments.`;
   }
 
   const incomingTotal = incoming.reduce((sum, f) => sum + f.size, 0);
-  if (existing.totalBytes + incomingTotal > ATTACHMENT_MAX_TOTAL_MB * MB) {
-    return `Total attachments for a run may not exceed ${ATTACHMENT_MAX_TOTAL_MB} MB.`;
+  if (existing.totalBytes + incomingTotal > config.maxTotalMb * MB) {
+    return `Total attachments for a run may not exceed ${config.maxTotalMb} MB.`;
   }
 
   return null;
