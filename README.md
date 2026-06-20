@@ -332,6 +332,7 @@ works in dev (Vite dev-server proxy) and in production (nginx proxy) with no COR
 | `/projects` | required | List all projects. |
 | `/projects/new` | required | Create a project (name, description, track). Needs `PROJECT_CREATE`. |
 | `/projects/:id` | required | Project detail: start a phase, generate / submit output, review, and the full phase-execution history. |
+| `/users` | `SUPER_ADMIN` | User administration: list users and change their global role. |
 
 Unauthenticated access to a protected route redirects to `/login`; a `401` from
 the API auto-logs-out. New users register as `OPERATION`, which lacks
@@ -364,9 +365,24 @@ startable list stay in sync. The role-gating rules mirror the backend's pure
 engines and live in `frontend/src/lib/permissions.ts` and
 `frontend/src/lib/workflow.ts`.
 
-**Status:** auth + app shell + projects (list / create / detail) and the full
-phase-execution UI (start / generate / submit / review) are implemented. The
-user-management UI (`SUPER_ADMIN`) is the remaining planned follow-up.
+**User administration (`SUPER_ADMIN`)**
+
+The `/users` screen lists every user and lets a super admin change their global
+role. The "Users" nav item appears only for super admins, and the page itself
+shows a not-authorized notice as a backstop (the backend re-checks `USER_MANAGE`
+on every request). Each row has a role selector with Save / Reset that appear
+only once the role is changed; the admin's own row is locked (you cannot change
+your own role), and the backend safety rules — you cannot remove the last super
+admin — surface as an inline error with the selector reverted.
+
+> Note: roles are read from the JWT, so a role change takes effect for an
+> already-signed-in user only after their token is reissued (next login). This is
+> a known backend auth-design item tracked with the other debt, not specific to
+> this screen.
+
+**Status:** the frontend is feature-complete — auth, app shell, projects
+(list / create / detail), the phase-execution UI (start / generate / submit /
+review), and user administration are all implemented.
 
 **Local development**
 
