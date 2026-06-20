@@ -331,16 +331,42 @@ works in dev (Vite dev-server proxy) and in production (nginx proxy) with no COR
 | `/login`, `/register` | public | Email/password auth (JWT stored client-side). |
 | `/projects` | required | List all projects. |
 | `/projects/new` | required | Create a project (name, description, track). Needs `PROJECT_CREATE`. |
-| `/projects/:id` | required | Project detail: phase-execution history + suggested next phase. |
+| `/projects/:id` | required | Project detail: start a phase, generate / submit output, review, and the full phase-execution history. |
 
 Unauthenticated access to a protected route redirects to `/login`; a `401` from
 the API auto-logs-out. New users register as `OPERATION`, which lacks
 `PROJECT_CREATE`, so "New project" returns a friendly `403` until a
 `SUPER_ADMIN` grants a suitable role.
 
-**Status:** auth + app shell + projects (list / create / detail) are implemented.
-Phase-execution screens (start a phase, AI-generate, review/approve) and the
-user-management UI are planned follow-ups.
+**Driving the workflow (project detail)**
+
+The detail screen turns the phase lifecycle into clickable actions. What each
+user sees is gated by their role — buttons for actions they cannot perform are
+hidden and a short hint is shown instead — while the backend re-checks every
+request (the UI gating is convenience, not the security boundary):
+
+- **Start a phase** — the "Start a phase" panel offers the next startable
+  phase(s) (the next unapproved phase, plus any approved-but-repeatable phase
+  such as `QA`), with an optional free-text input/context box. Visible to the
+  phase's worker role (`BA`→Planner, `SA`→Dev/Code Review, `QA`→QA,
+  `OPERATION`→Docs) or `SUPER_ADMIN`.
+- **Generate with AI / Submit manually** — on a run that is `IN_PROGRESS` or
+  `CHANGES_REQUESTED`, the worker role can generate the output via Claude or
+  paste it in by hand; either moves the run to `AWAITING_REVIEW`.
+- **Approve / Request changes** — on an `AWAITING_REVIEW` run, the project
+  owner (or `SUPER_ADMIN`) approves it (→ `APPROVED`) or sends it back with an
+  optional note (→ `CHANGES_REQUESTED`).
+- **Output viewer** — each run's generated/submitted output is shown in a
+  collapsible monospace panel; token counts and regeneration count are listed.
+
+After every action the project is refetched so the suggested next phase and the
+startable list stay in sync. The role-gating rules mirror the backend's pure
+engines and live in `frontend/src/lib/permissions.ts` and
+`frontend/src/lib/workflow.ts`.
+
+**Status:** auth + app shell + projects (list / create / detail) and the full
+phase-execution UI (start / generate / submit / review) are implemented. The
+user-management UI (`SUPER_ADMIN`) is the remaining planned follow-up.
 
 **Local development**
 
@@ -367,9 +393,12 @@ Pure-domain engines (`workflow`, `permissions`, `prompts`) and the generation
 service are unit-tested in isolation; `health` is covered with supertest.
 End-to-end smoke scripts live in `qa/` and run against a deployed instance:
 `smoke-phase2.sh`, `smoke-phase2.5.sh`, `smoke-phase3.sh`, `smoke-phase4.sh`
-(backend), and `smoke-frontend.sh` (frontend container — SPA routing, security
+(backend), `smoke-frontend.sh` (frontend container — SPA routing, security
 headers, and the `/api` + `/health` proxy path; run with
-`BASE_URL=http://localhost:8080 ./qa/smoke-frontend.sh`).
+`BASE_URL=http://localhost:8080 ./qa/smoke-frontend.sh`), and `smoke-fe3.sh`
+(the phase-lifecycle API contract the project-detail UI drives — start → submit
+→ review plus role/status guards; uses the free manual path, with the real AI
+generate call gated behind `GEN_TEST=1`).
 
 ## Deployment
 
