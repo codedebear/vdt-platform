@@ -280,7 +280,9 @@ Fetches one project with its phase executions and the suggested next phase. Each
 execution embeds its **attachment metadata** (`attachments[]`, no file bytes), so
 the detail screen renders attachments without an extra request per run. The
 project also carries `budgetUsd` (the lifetime AI cost cap, `null` = unlimited)
-and `spentUsd` (accumulated estimated spend).
+and `spentUsd` (accumulated estimated spend). It also returns `startablePhases`
+— the server-computed list of phases that may be started right now (the UI gates
+these by role instead of re-deriving the start rules).
 **Response:** `200 OK`. Errors: `404` not found.
 
 #### `PATCH /api/projects/:id/budget`
@@ -337,6 +339,12 @@ Errors: `402` project budget exhausted, `403` role not allowed, `404` missing,
 `409` invalid status or a concurrent generation conflict (retry),
 `422` invalid `mode`, `429` rate limit or per-run cap reached,
 `502` upstream generation/submission failed, `503` `ANTHROPIC_API_KEY` not configured.
+
+#### `GET /api/phases/:executionId`
+Fetches a single phase execution (metadata only — attachment metadata, never file
+bytes). A lightweight read the project-detail UI uses to poll a run's status while
+a batch generation is `QUEUED`, instead of refetching the whole project.
+**Response:** `200 OK`. Errors: `404` not found.
 
 #### `POST /api/phases/:executionId/output`
 Submits a run's output manually (override / when not using AI generation), moving
@@ -476,7 +484,11 @@ request (the UI gating is convenience, not the security boundary):
   `OPERATION`→Docs) or `SUPER_ADMIN`.
 - **Generate with AI / Submit manually** — on a run that is `IN_PROGRESS` or
   `CHANGES_REQUESTED`, the worker role can generate the output via Claude or
-  paste it in by hand; either moves the run to `AWAITING_REVIEW`.
+  paste it in by hand. Generation offers two modes behind a confirm step:
+  **Generate with AI** (sync — returns `AWAITING_REVIEW` immediately) and
+  **Generate (batch · ~50% cheaper)** (async — the run goes `QUEUED` and the page
+  auto-refreshes until the poller resolves it). A manual submit moves the run
+  straight to `AWAITING_REVIEW`.
 - **Approve / Request changes** — on an `AWAITING_REVIEW` run, the project
   owner (or `SUPER_ADMIN`) approves it (→ `APPROVED`) or sends it back with an
   optional note (→ `CHANGES_REQUESTED`).
@@ -489,9 +501,12 @@ request (the UI gating is convenience, not the security boundary):
   collapsible monospace panel; token counts and regeneration count are listed.
 
 After every action the project is refetched so the suggested next phase and the
-startable list stay in sync. The role-gating rules mirror the backend's pure
-engines and live in `frontend/src/lib/permissions.ts` and
-`frontend/src/lib/workflow.ts`.
+startable list stay in sync; the **startable phases are computed server-side**
+(`GET /api/projects/:id` → `startablePhases`), so the UI no longer re-implements
+the workflow start rules. While a run is `QUEUED` the detail page polls just that
+run via `GET /api/phases/:id` (pausing while the tab is hidden) and does a full
+reload only once it resolves. The remaining role-gating rules still mirror the
+backend and live in `frontend/src/lib/permissions.ts`.
 
 **User administration (`SUPER_ADMIN`)**
 
@@ -557,7 +572,13 @@ project budget fields, `PATCH /budget` guards, input max-length `422`, and the
 `GEN_TEST=1`), and `smoke-batch1.sh` (batch generation — invalid-`mode` `422`,
 the unconfigured-batch `503` contract, and, behind `BATCH_TEST=1`, the full
 `202 → QUEUED → poller → AWAITING_REVIEW` loop plus the second-generate-on-QUEUED
-`409` guard; the real batch run spends ~half-price Claude tokens).
+`409` guard; the real batch run spends ~half-price Claude tokens), and
+`smoke-fe-batch1.sh` (the generation-mode contract the queued UI drives —
+invalid-`mode` `422`, the `mode=sync` accept path, `startablePhases` in the
+project detail and the `GET /api/phases/:id` poll endpoint, plus the batch path:
+`503` when unconfigured, or behind `BATCH_TEST=1` the `202 → QUEUED → poller →
+AWAITING_REVIEW` loop with the second-generate-on-QUEUED `409`; includes an
+optional frontend build check, skipped off-toolchain or with `SKIP_BUILD=1`).
 
 ## Deployment
 
