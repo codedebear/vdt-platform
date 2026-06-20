@@ -21,8 +21,16 @@ export const REPEATABLE_PHASES: Record<Track, readonly PhaseType[]> = {
   QA_ONLY: ['QA'],
 };
 
-/** Statuses that mean a phase run is still "open" (not yet resolved). */
-const OPEN_STATUSES: readonly PhaseStatus[] = ['IN_PROGRESS', 'AWAITING_REVIEW'];
+/**
+ * Statuses that mean a phase run is still "open" (not yet resolved). QUEUED is a
+ * batch generation in flight — it must block a parallel run of the same phase,
+ * exactly as the backend's OPEN_STATUSES does.
+ */
+const OPEN_STATUSES: readonly PhaseStatus[] = [
+  'IN_PROGRESS',
+  'AWAITING_REVIEW',
+  'QUEUED',
+];
 
 /** Minimal execution shape the engine's decisions depend on. */
 export interface ExecutionSummary {

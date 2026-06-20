@@ -35,18 +35,22 @@ export default function PhaseExecutionCard({
   canReview,
   onChanged,
 }: PhaseExecutionCardProps) {
-  const [busy, setBusy] = useState<null | 'generate' | 'submit' | 'approve' | 'changes'>(
-    null,
-  );
+  const [busy, setBusy] = useState<
+    null | 'generate' | 'batch' | 'submit' | 'approve' | 'changes'
+  >(null);
   const [error, setError] = useState<string | null>(null);
   const [showOutput, setShowOutput] = useState(false);
   const [manualMode, setManualMode] = useState(false);
   const [manualOutput, setManualOutput] = useState('');
   const [reviewNote, setReviewNote] = useState('');
+  // Which generate mode the worker is confirming (null = no pending confirm).
+  const [confirmKind, setConfirmKind] = useState<null | 'sync' | 'batch'>(null);
 
   const isProducible =
     execution.status === 'IN_PROGRESS' || execution.status === 'CHANGES_REQUESTED';
   const isReviewable = execution.status === 'AWAITING_REVIEW';
+  // A batch generation is in flight; the backend poller will resolve it.
+  const isQueued = execution.status === 'QUEUED';
 
   async function run(
     kind: NonNullable<typeof busy>,
@@ -59,6 +63,7 @@ export default function PhaseExecutionCard({
       setManualMode(false);
       setManualOutput('');
       setReviewNote('');
+      setConfirmKind(null);
       await onChanged();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Action failed, please try again');
@@ -131,32 +136,97 @@ export default function PhaseExecutionCard({
         </div>
       )}
 
+      {/* Batch generation in flight: poller resolves it; no actions meanwhile. */}
+      {isQueued && (
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3 text-sm text-indigo-700">
+          <span
+            className="h-2 w-2 animate-pulse rounded-full bg-indigo-500"
+            aria-hidden
+          />
+          <span>
+            Queued — generating via the Batch API. This updates automatically when
+            ready.
+          </span>
+          {execution.batchId && (
+            <code className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs text-indigo-600">
+              batch …{execution.batchId.slice(-8)}
+            </code>
+          )}
+        </div>
+      )}
+
       {/* Worker actions: generate / manual submit */}
       {isProducible && canWork && (
         <div className="mt-3 border-t border-slate-100 pt-3">
           {!manualMode ? (
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="primary"
-                loading={busy === 'generate'}
-                disabled={anyBusy}
-                onClick={() =>
-                  run('generate', () => api.generatePhase(execution.id))
-                }
-              >
-                Generate with AI
-              </Button>
-              <Button
-                variant="secondary"
-                disabled={anyBusy}
-                onClick={() => {
-                  setManualOutput(execution.output ?? '');
-                  setManualMode(true);
-                }}
-              >
-                Submit output manually
-              </Button>
-            </div>
+            confirmKind ? (
+              <div className="space-y-2">
+                <p className="text-sm text-slate-600">
+                  {confirmKind === 'batch'
+                    ? 'Submit a batch generation? This calls Claude via the Anthropic Batch API (~50% cheaper) and may take a while — the run will queue and update automatically when ready.'
+                    : 'Generate now? This calls Claude immediately and consumes tokens against the project budget.'}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="primary"
+                    loading={busy === 'generate' || busy === 'batch'}
+                    disabled={anyBusy}
+                    onClick={() =>
+                      run(confirmKind === 'batch' ? 'batch' : 'generate', () =>
+                        api.generatePhase(
+                          execution.id,
+                          confirmKind === 'batch' ? 'batch' : 'sync',
+                        ),
+                      )
+                    }
+                  >
+                    {confirmKind === 'batch'
+                      ? 'Confirm batch generate'
+                      : 'Confirm generate'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={anyBusy}
+                    onClick={() => setConfirmKind(null)}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="primary"
+                    disabled={anyBusy}
+                    onClick={() => setConfirmKind('sync')}
+                  >
+                    Generate with AI
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={anyBusy}
+                    onClick={() => setConfirmKind('batch')}
+                  >
+                    Generate (batch · ~50% cheaper)
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    disabled={anyBusy}
+                    onClick={() => {
+                      setManualOutput(execution.output ?? '');
+                      setManualMode(true);
+                    }}
+                  >
+                    Submit output manually
+                  </Button>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Batch generation is ~50% cheaper but asynchronous: the run shows
+                  as Queued and updates automatically when ready.
+                </p>
+              </div>
+            )
           ) : (
             <div className="space-y-2">
               <Textarea

@@ -22,7 +22,10 @@ export type PhaseStatus =
   | 'AWAITING_REVIEW'
   | 'APPROVED'
   | 'CHANGES_REQUESTED'
-  | 'FAILED';
+  | 'FAILED'
+  /** A batch-mode generation is in flight on the Anthropic Batch API; the
+   *  backend poller resolves it to AWAITING_REVIEW or FAILED. */
+  | 'QUEUED';
 
 export interface User {
   id: string;
@@ -48,6 +51,8 @@ export interface PhaseExecution {
   inputTokens: number | null;
   outputTokens: number | null;
   generationCount: number;
+  /** Anthropic Batch API id while a batch generation is QUEUED; null otherwise. */
+  batchId: string | null;
   startedAt: string;
   completedAt: string | null;
   createdAt: string;
@@ -123,6 +128,13 @@ export interface AdminUser {
 
 /** Human review decision on a phase run. */
 export type ReviewAction = 'APPROVE' | 'REQUEST_CHANGES';
+
+/**
+ * How a phase output is generated:
+ * - `sync`  — immediate, full price, returns AWAITING_REVIEW.
+ * - `batch` — Anthropic Batch API, ~50% cheaper, async (run goes QUEUED).
+ */
+export type GenerationMode = 'sync' | 'batch';
 
 /** Body for POST /api/projects/:id/phases — start a new run of a phase. */
 export interface StartPhaseInput {

@@ -68,6 +68,18 @@ export default function ProjectDetailPage() {
     };
   }, [id]);
 
+  // Auto-refresh while any run is QUEUED (a batch generation in flight) so the
+  // UI reflects the backend poller's resolution (→ AWAITING_REVIEW / FAILED)
+  // without a manual reload. The interval is torn down once nothing is queued.
+  const hasQueued = Boolean(project?.executions.some((e) => e.status === 'QUEUED'));
+  useEffect(() => {
+    if (!hasQueued) return;
+    const timer = setInterval(() => {
+      void load();
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [hasQueued, load]);
+
   const role = user?.role;
   const isOwner = Boolean(user && project && user.id === project.ownerId);
   const canReview = Boolean(role && can(role, 'PHASE_REVIEW', { isProjectOwner: isOwner }));

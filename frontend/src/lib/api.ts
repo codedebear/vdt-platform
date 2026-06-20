@@ -12,6 +12,7 @@ import type {
   AttachmentMeta,
   AuthResponse,
   CreateProjectInput,
+  GenerationMode,
   PhaseExecution,
   Project,
   ProjectDetail,
@@ -138,10 +139,18 @@ export const api = {
       body: input,
     }),
 
-  /** Generate a run's output via Claude (moves it to AWAITING_REVIEW). */
-  generatePhase: (executionId: string) =>
+  /**
+   * Generate a run's output via Claude.
+   * - `sync` (default): runs now and returns the run AWAITING_REVIEW (HTTP 200).
+   * - `batch`: submits to the Anthropic Batch API (~50% cheaper) and returns the
+   *   run QUEUED (HTTP 202); a backend poller later moves it to AWAITING_REVIEW
+   *   or FAILED. The request body always sends an explicit mode so the contract
+   *   is unambiguous.
+   */
+  generatePhase: (executionId: string, mode: GenerationMode = 'sync') =>
     request<PhaseExecution>(`/api/phases/${executionId}/generate`, {
       method: 'POST',
+      body: { mode },
     }),
 
   /** Submit a run's output manually (override of AI generation). */
