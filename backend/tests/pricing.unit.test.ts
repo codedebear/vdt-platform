@@ -1,7 +1,16 @@
 /**
  * Unit tests for the pure pricing domain (cost estimation + price resolution).
  */
-import { estimateCostUsd, resolveModelPrice } from '../src/domain/pricing';
+import { approxTokensFromChars, estimateCostUsd, resolveModelPrice } from '../src/domain/pricing';
+
+describe('approxTokensFromChars', () => {
+  it('over-estimates at ~3 chars/token and never goes negative', () => {
+    expect(approxTokensFromChars(300)).toBe(100);
+    expect(approxTokensFromChars(301)).toBe(101); // rounds up
+    expect(approxTokensFromChars(0)).toBe(0);
+    expect(approxTokensFromChars(-50)).toBe(0);
+  });
+});
 
 describe('resolveModelPrice', () => {
   it('matches model families by substring', () => {

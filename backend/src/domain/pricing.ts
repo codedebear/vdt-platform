@@ -56,6 +56,16 @@ export function resolveModelPrice(model: string, override?: PriceOverride): Mode
 }
 
 /**
+ * Rough upper-bound token estimate from a character count, used to pre-reserve
+ * budget before a call (the API's exact token count is unknown until it
+ * responds). Uses ~3 chars/token — deliberately lower than the ~4 chars/token
+ * rule of thumb so the estimate over-counts rather than under-counts.
+ */
+export function approxTokensFromChars(chars: number): number {
+  return Math.ceil(Math.max(0, chars) / 3);
+}
+
+/**
  * Estimates the USD cost of a generation. Null/undefined token counts are
  * treated as 0 (e.g. when the API did not report usage), so the result is never
  * NaN. Returns a non-negative number.

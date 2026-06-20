@@ -23,7 +23,7 @@ import {
 } from '../domain/workflow';
 import { can, Role } from '../domain/permissions';
 import { buildPrompt, PriorOutput } from '../domain/prompts';
-import { estimateCostUsd } from '../domain/pricing';
+import { approxTokensFromChars, estimateCostUsd } from '../domain/pricing';
 import { isBudgetExhausted } from '../domain/budget';
 import { generateText, GenerationClient } from './generation.service';
 import { prepareAttachments } from './attachmentContent.service';
@@ -218,31 +218,19 @@ export async function generatePhaseOutput(
     );
   }
 
-  // Cost guard (hard block): refuse if the project's accumulated AI spend has
-  // reached its budget. Checked before the paid Claude call so no tokens are
-  // spent once exhausted.
+  const projectId = execution.project.id;
+  const priceOverride = {
+    inputPerMTok: env.anthropicPriceInputPerMTok,
+    outputPerMTok: env.anthropicPriceOutputPerMTok,
+  };
+
+  // Cheap early reject if the project's budget is already fully spent (avoids
+  // building the prompt). The authoritative, race-safe check is in the reserve
+  // transaction below.
   if (isBudgetExhausted(execution.project.spentUsd, execution.project.budgetUsd)) {
     throw new AppError(
       `This project has reached its AI budget ($${execution.project.budgetUsd?.toFixed(2)}); ask an admin to raise it`,
       402,
-    );
-  }
-
-  // Cost guard: cap how many times a single run may be (re)generated. Claim a
-  // slot atomically (conditional increment) so concurrent regenerates cannot
-  // both pass a stale read and exceed the cap.
-  const claim = await prisma.phaseExecution.updateMany({
-    where: {
-      id: executionId,
-      status: { in: ['IN_PROGRESS', 'CHANGES_REQUESTED'] },
-      generationCount: { lt: env.generateMaxPerRun },
-    },
-    data: { generationCount: { increment: 1 } },
-  });
-  if (claim.count === 0) {
-    throw new AppError(
-      `This run has reached its generation limit (${env.generateMaxPerRun}); submit or have it reviewed instead`,
-      429,
     );
   }
 
@@ -261,41 +249,103 @@ export async function generatePhaseOutput(
     input: execution.input ? truncate(execution.input, env.inputMaxChars) : undefined,
   });
 
+  // Fold in any attachments: PDFs become document blocks Claude reads directly;
+  // spreadsheets/Word/text are extracted and appended to the prompt. Done before
+  // any slot/budget reservation so a bad file (422) consumes nothing.
+  const prepared = await prepareAttachments(
+    execution.attachments.map((a) => ({
+      filename: a.filename,
+      mimeType: a.mimeType,
+      data: Buffer.from(a.data),
+    })),
+  );
+  const userPrompt =
+    prepared.textSections.length > 0
+      ? `${user}\n\n## Attached documents\n${prepared.textSections.join('\n\n')}`
+      : user;
+
+  // Reserve an upper-bound cost for this call (output is capped at max_tokens;
+  // input is over-estimated from the prompt length). Claiming the generation
+  // slot and reserving the budget happen together in a Serializable transaction,
+  // so two concurrent generations cannot both pass a stale read and overshoot
+  // the budget — one is aborted (P2034) and retried. The reserve is settled to
+  // the actual cost after the call (or released if it fails), so the budget is a
+  // true cap that errs toward under-spending, never over.
+  const reserveUsd = estimateCostUsd(
+    env.anthropicModel,
+    approxTokensFromChars(system.length + userPrompt.length),
+    env.anthropicMaxTokens,
+    priceOverride,
+  );
+
+  try {
+    await prisma.$transaction(
+      async (tx) => {
+        const proj = await tx.project.findUnique({
+          where: { id: projectId },
+          select: { spentUsd: true, budgetUsd: true },
+        });
+        if (!proj) {
+          throw new AppError('Project not found', 404);
+        }
+        if (proj.budgetUsd !== null && proj.spentUsd + reserveUsd > proj.budgetUsd) {
+          throw new AppError(
+            `This project has reached its AI budget ($${proj.budgetUsd.toFixed(2)}); ask an admin to raise it`,
+            402,
+          );
+        }
+        // Cap how many times a single run may be (re)generated. The cap counts
+        // generation *attempts*: the slot is claimed here and not refunded on a
+        // failed call, so there is no rollback path to leak a slot on a crash.
+        const claim = await tx.phaseExecution.updateMany({
+          where: {
+            id: executionId,
+            status: { in: ['IN_PROGRESS', 'CHANGES_REQUESTED'] },
+            generationCount: { lt: env.generateMaxPerRun },
+          },
+          data: { generationCount: { increment: 1 } },
+        });
+        if (claim.count === 0) {
+          throw new AppError(
+            `This run has reached its generation limit (${env.generateMaxPerRun}); submit or have it reviewed instead`,
+            429,
+          );
+        }
+        await tx.project.update({
+          where: { id: projectId },
+          data: { spentUsd: { increment: reserveUsd } },
+        });
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2034') {
+      throw new AppError('A concurrent generation is updating this project; please retry', 409);
+    }
+    throw err;
+  }
+
   let result;
   try {
-    // Fold in any attachments: PDFs become document blocks Claude reads directly;
-    // spreadsheets/Word/text are extracted and appended to the prompt.
-    const prepared = await prepareAttachments(
-      execution.attachments.map((a) => ({
-        filename: a.filename,
-        mimeType: a.mimeType,
-        data: Buffer.from(a.data),
-      })),
-    );
-    const userPrompt =
-      prepared.textSections.length > 0
-        ? `${user}\n\n## Attached documents\n${prepared.textSections.join('\n\n')}`
-        : user;
-
     result = await generateText(system, userPrompt, client, prepared.documents);
   } catch (err) {
-    // The generation (or attachment prep) failed, so release the slot we claimed
-    // — a failed attempt should not count against the per-run regeneration cap.
-    await prisma.phaseExecution
-      .updateMany({
-        where: { id: executionId, generationCount: { gt: 0 } },
-        data: { generationCount: { decrement: 1 } },
-      })
+    // Release the budget reservation (the call did not complete). The generation
+    // slot is intentionally kept — the per-run cap counts attempts.
+    await prisma.project
+      .update({ where: { id: projectId }, data: { spentUsd: { decrement: reserveUsd } } })
       .catch(() => undefined);
     throw err;
   }
 
-  // Record the output and bill the project's budget. Both updates run in one
-  // transaction so the run and the project's accumulated spend stay consistent.
-  const costUsd = estimateCostUsd(env.anthropicModel, result.inputTokens, result.outputTokens, {
-    inputPerMTok: env.anthropicPriceInputPerMTok,
-    outputPerMTok: env.anthropicPriceOutputPerMTok,
-  });
+  // Settle the reservation to the actual cost and record the output. Both
+  // updates run in one transaction so the run and the project's spend stay
+  // consistent. Net project spend changes by exactly the actual cost.
+  const actualCostUsd = estimateCostUsd(
+    env.anthropicModel,
+    result.inputTokens,
+    result.outputTokens,
+    priceOverride,
+  );
   const [updated] = await prisma.$transaction([
     prisma.phaseExecution.update({
       where: { id: executionId },
@@ -304,12 +354,12 @@ export async function generatePhaseOutput(
         status: 'AWAITING_REVIEW',
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
-        costUsd,
+        costUsd: actualCostUsd,
       },
     }),
     prisma.project.update({
-      where: { id: execution.project.id },
-      data: { spentUsd: { increment: costUsd } },
+      where: { id: projectId },
+      data: { spentUsd: { increment: actualCostUsd - reserveUsd } },
     }),
   ]);
   return updated;

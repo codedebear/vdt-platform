@@ -9,9 +9,11 @@
 #   - budget HARD BLOCK            -> budget 0 makes generate return 402 (no Claude call, no tokens)
 #   - (optional GEN_TEST=1)        -> a real generate accumulates spentUsd + sets costUsd
 #
-# The two concurrency fixes (per-run generationCount atomic claim, last-super-admin
+# The concurrency-safety mechanisms (budget reserve + slot claim in one
+# Serializable transaction; attempts-counted generation cap; last-super-admin
 # Serializable demotion) are not deterministically testable from a shell smoke;
-# they are covered by the atomic DB operations + the unit suite.
+# they are covered by the atomic DB operations + the unit suite. The budget=0
+# block below still exercises the enforcement path end to end.
 #
 # Usage (run on the Pi, repo root, backend running):
 #   bash qa/smoke-debt1.sh
