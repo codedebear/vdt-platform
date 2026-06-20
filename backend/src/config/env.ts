@@ -29,6 +29,9 @@ const envSchema = z.object({
   ATTACHMENT_MAX_FILE_MB: z.coerce.number().positive().default(10),
   ATTACHMENT_MAX_PER_RUN: z.coerce.number().int().positive().default(5),
   ATTACHMENT_MAX_TOTAL_MB: z.coerce.number().positive().default(25),
+  // Per-user rate limit for the upload endpoint (writes to Postgres + buffers in
+  // memory), to protect the shared storage/memory budget from abuse.
+  ATTACHMENT_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(20),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -56,4 +59,5 @@ export const env = {
   attachmentMaxFileMb: parsed.data.ATTACHMENT_MAX_FILE_MB,
   attachmentMaxPerRun: parsed.data.ATTACHMENT_MAX_PER_RUN,
   attachmentMaxTotalMb: parsed.data.ATTACHMENT_MAX_TOTAL_MB,
+  attachmentRateLimitPerMin: parsed.data.ATTACHMENT_RATE_LIMIT_PER_MIN,
 };

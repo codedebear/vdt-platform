@@ -18,3 +18,17 @@ export const generateRateLimiter = rateLimit({
   keyGenerator: (req: Request) => req.user?.id ?? req.ip ?? 'anonymous',
   message: { error: 'Too many generation requests; please slow down and retry shortly' },
 });
+
+/**
+ * Rate limiter for the attachment upload endpoint. Keyed by user id like the
+ * generation limiter, because each upload persists bytes to Postgres and buffers
+ * the file in memory — limiting it protects the shared storage/memory budget.
+ */
+export const attachmentRateLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: env.attachmentRateLimitPerMin,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => req.user?.id ?? req.ip ?? 'anonymous',
+  message: { error: 'Too many upload requests; please slow down and retry shortly' },
+});
