@@ -62,11 +62,16 @@ Fill in these keys:
 | `ANTHROPIC_TIMEOUT_MS` | `120000` (default) |
 | `ANTHROPIC_MAX_RETRIES` | `2` (default) |
 | `GENERATE_RATE_LIMIT_PER_MIN` | `10` (default) — per-user limit on `/generate` |
-| `GENERATE_MAX_PER_RUN` | `5` (default) — max regenerations per phase run |
+| `GENERATE_MAX_PER_RUN` | `5` (default) — max generation attempts per phase run |
+| `PROJECT_BUDGET_USD_DEFAULT` | `0` (default) — per-project AI budget seeded on new projects; `0` = unlimited |
+| `ANTHROPIC_PRICE_INPUT_PER_MTOK` / `_OUTPUT_PER_MTOK` | `0` (default) — override cost-estimate prices; `0` = built-in table |
+| `INPUT_MAX_CHARS` / `PRIOR_OUTPUT_MAX_CHARS` | `100000` / `20000` (defaults) — prompt cost guards |
 
 > Do not commit this file. Keep the Neon password, JWT secret, and Anthropic key off git.
-> The `ANTHROPIC_*` and `GENERATE_*` keys have safe defaults in `docker-compose.yml`, so
-> you only need to set `ANTHROPIC_API_KEY` to enable AI generation; the rest are optional.
+> The `ANTHROPIC_*`, `GENERATE_*`, `PROJECT_BUDGET_*`, and prompt-cap keys have safe defaults
+> in `docker-compose.yml`, so you only need to set `ANTHROPIC_API_KEY` to enable AI generation;
+> the rest are optional. To cap AI spend per project, set `PROJECT_BUDGET_USD_DEFAULT` (or set
+> a per-project budget via `PATCH /api/projects/:id/budget`).
 
 ---
 

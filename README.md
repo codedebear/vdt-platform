@@ -72,7 +72,12 @@ gitignored — copy `.env.example` and fill it in.
 | `ANTHROPIC_TIMEOUT_MS` | — | `120000` | Per-request timeout to the Anthropic API. |
 | `ANTHROPIC_MAX_RETRIES` | — | `2` | SDK retry budget on transient upstream errors. |
 | `GENERATE_RATE_LIMIT_PER_MIN` | — | `10` | Per-user rate limit on `/generate` (requests/minute). |
-| `GENERATE_MAX_PER_RUN` | — | `5` | Max (re)generations allowed for a single phase run before `429`. |
+| `GENERATE_MAX_PER_RUN` | — | `5` | Max generation *attempts* for a single phase run before `429` (counts failed attempts too). |
+| `PROJECT_BUDGET_USD_DEFAULT` | — | `0` | Default per-project AI cost budget (USD) seeded on new projects; `0` = unlimited. Enforced as a hard block on `/generate`. |
+| `ANTHROPIC_PRICE_INPUT_PER_MTOK` | — | `0` | Override input price per million tokens for cost estimation; `0` = use the built-in pricing table. |
+| `ANTHROPIC_PRICE_OUTPUT_PER_MTOK` | — | `0` | Override output price per million tokens; `0` = use the built-in table. |
+| `INPUT_MAX_CHARS` | — | `100000` | Max characters accepted in a run's `input`; also truncates input folded into a generation prompt. |
+| `PRIOR_OUTPUT_MAX_CHARS` | — | `20000` | Max characters of each prior-phase output folded into a generation prompt (caps token cost). |
 | `ATTACHMENT_MAX_FILE_MB` | — | `10` | Max size of a single attached file. |
 | `ATTACHMENT_MAX_PER_RUN` | — | `5` | Max number of attachments per phase run. |
 | `ATTACHMENT_MAX_TOTAL_MB` | — | `25` | Max combined size of a run's attachments. |
@@ -95,6 +100,17 @@ gitignored — copy `.env.example` and fill it in.
 that requests changes, which can be resubmitted; `FAILED` for a terminated run).
 Each *run* of a phase is a separate `PhaseExecution` row, so a phase can be
 re-run (e.g. QA after a change request) without overwriting history.
+
+**AI cost budget** — each project has a lifetime budget (`budgetUsd`, `null` =
+unlimited) and an accumulated `spentUsd`. Every AI generation's cost is estimated
+from its token usage at the model's per-million-token price (a built-in table,
+overridable via `ANTHROPIC_PRICE_*`; costs are *approximate* — cache/batch
+discounts are ignored) and added to `spentUsd`; the run keeps its own `costUsd`.
+The budget is a **hard block**: a generation is reserved against the budget
+before the paid call and refused with `402` once the cap is reached, so it errs
+toward under-spending rather than overshooting. New projects start at
+`PROJECT_BUDGET_USD_DEFAULT`; the owner or a `SUPER_ADMIN` can change it via
+`PATCH /api/projects/:id/budget`.
 
 **Roles (global, per user):**
 
@@ -240,8 +256,21 @@ Lists all projects. **Response:** `200 OK` with an array of projects.
 #### `GET /api/projects/:id`
 Fetches one project with its phase executions and the suggested next phase. Each
 execution embeds its **attachment metadata** (`attachments[]`, no file bytes), so
-the detail screen renders attachments without an extra request per run.
+the detail screen renders attachments without an extra request per run. The
+project also carries `budgetUsd` (the lifetime AI cost cap, `null` = unlimited)
+and `spentUsd` (accumulated estimated spend).
 **Response:** `200 OK`. Errors: `404` not found.
+
+#### `PATCH /api/projects/:id/budget`
+Sets or clears the project's lifetime AI cost budget (USD). Only the project
+owner or a `SUPER_ADMIN` may change it.
+**Request body:**
+```json
+{ "budgetUsd": 25 }
+```
+`budgetUsd` is a non-negative number, or `null` to clear it (unlimited).
+**Response:** `200 OK` with the updated project. Errors: `403` not owner/admin,
+`404` project missing, `422` invalid value.
 
 #### `POST /api/projects/:id/phases`
 Starts a new run of a phase. Authorized per phase-type in the service layer
@@ -262,10 +291,16 @@ The prompt is built from project context, the approved outputs of earlier phases
 and **the run's attachments** — PDFs are sent to Claude as document blocks (read
 directly, including scanned pages); spreadsheets, Word and text files are
 extracted to text and appended to the prompt. **Per-user rate-limited** and
-**capped per run** (`GENERATE_MAX_PER_RUN`).
+**capped per run** (`GENERATE_MAX_PER_RUN` — counts attempts). It is also subject
+to the project's **AI cost budget**: before the (paid) call, an upper-bound cost
+is reserved against the project's `spentUsd` inside a serializable transaction;
+if that would exceed `budgetUsd` the call is refused with `402` and no tokens are
+spent. After a successful call the reserve is settled to the actual cost, the
+run's `costUsd` is recorded, and `spentUsd` is incremented.
 **Request body:** none.
-**Response:** `200 OK` with the updated execution (output + token usage).
-Errors: `403` role not allowed, `404` missing, `409` invalid status,
+**Response:** `200 OK` with the updated execution (output, token usage, `costUsd`).
+Errors: `402` project budget exhausted, `403` role not allowed, `404` missing,
+`409` invalid status or a concurrent generation conflict (retry),
 `429` rate limit or per-run cap reached, `502` upstream generation failed,
 `503` `ANTHROPIC_API_KEY` not configured.
 
@@ -478,11 +513,14 @@ generate call gated behind `GEN_TEST=1`), `smoke-doc1.sh` (attachment upload
 API — valid upload + list + delete, plus the unsupported-type / oversized /
 wrong-role / closed-run guards; no Claude tokens spent), `smoke-doc2.sh`
 (generation reads an attached file — attach + generate, with the real Claude call
-gated behind a configured `ANTHROPIC_API_KEY`), and `smoke-fe-doc1.sh` (the
+gated behind a configured `ANTHROPIC_API_KEY`), `smoke-fe-doc1.sh` (the
 attachment-UI contract — `GET /api/config`, the StartPhaseCard start → upload
 sequence, list / add / delete, attachments embedded in project detail, and the
 approved-run read-only guard; includes an optional frontend build check, skipped
-off-toolchain or with `SKIP_BUILD=1`).
+off-toolchain or with `SKIP_BUILD=1`), and `smoke-debt1.sh` (the AI cost budget —
+project budget fields, `PATCH /budget` guards, input max-length `422`, and the
+`budget = 0 → generate 402` hard block; real spend accounting gated behind
+`GEN_TEST=1`).
 
 ## Deployment
 
