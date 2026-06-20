@@ -567,3 +567,34 @@ export async function settleBatchRun(
     }
   });
 }
+
+
+/**
+ * Loads a single phase execution with attachment metadata (never file bytes),
+ * for lightweight polling of a run's status (e.g. while a batch generation is
+ * QUEUED). Read access mirrors project detail: any authenticated user may read.
+ *
+ * @throws {AppError} 404 if no execution with that id exists.
+ */
+export async function getExecutionForView(executionId: string) {
+  const execution = await prisma.phaseExecution.findUnique({
+    where: { id: executionId },
+    include: {
+      attachments: {
+        select: {
+          id: true,
+          executionId: true,
+          filename: true,
+          mimeType: true,
+          sizeBytes: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      },
+    },
+  });
+  if (!execution) {
+    throw new AppError('Phase execution not found', 404);
+  }
+  return execution;
+}

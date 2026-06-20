@@ -160,6 +160,10 @@ export const api = {
       body: { output },
     }),
 
+  /** Fetch a single run (metadata only) — used to cheaply poll QUEUED runs. */
+  getPhase: (executionId: string) =>
+    request<PhaseExecution>(`/api/phases/${executionId}`),
+
   /** Approve or request changes on a run awaiting review. */
   reviewPhase: (executionId: string, input: ReviewPhaseInput) =>
     request<PhaseExecution>(`/api/phases/${executionId}/review`, {

@@ -10,7 +10,6 @@ import { useMemo, useRef, useState } from 'react';
 import { api, ApiError } from '../lib/api';
 import type { PhaseType, ProjectDetail, Role } from '../lib/types';
 import { can, PHASE_WORKER_ROLE } from '../lib/permissions';
-import { getStartablePhases } from '../lib/workflow';
 import { acceptAttr, formatBytes, validateNewFiles } from '../lib/attachments';
 import { useAttachmentConfig } from '../lib/config';
 import { Alert, Button, Card, Field, PHASE_LABELS, ROLE_LABELS, Select, Textarea } from './ui';
@@ -22,10 +21,8 @@ interface StartPhaseCardProps {
 }
 
 export default function StartPhaseCard({ project, role, onChanged }: StartPhaseCardProps) {
-  const startable = useMemo(
-    () => getStartablePhases(project.track, project.executions),
-    [project.track, project.executions],
-  );
+  // Server-computed (single source of truth); the UI only role-gates them.
+  const startable = project.startablePhases;
   const mine = useMemo(
     () => startable.filter((p) => can(role, 'PHASE_START', { phaseType: p })),
     [startable, role],

@@ -144,3 +144,22 @@ export async function reviewPhase(
     next(err);
   }
 }
+
+
+/**
+ * GET /api/phases/:executionId — returns a single phase execution (metadata
+ * only, no attachment bytes). Used by the UI to poll a run's status cheaply
+ * (e.g. while a batch generation is QUEUED) instead of refetching the project.
+ */
+export async function getPhase(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const execution = await phaseService.getExecutionForView(req.params.executionId);
+    res.status(200).json(execution);
+  } catch (err) {
+    next(err);
+  }
+}

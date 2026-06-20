@@ -68,17 +68,41 @@ export default function ProjectDetailPage() {
     };
   }, [id]);
 
-  // Auto-refresh while any run is QUEUED (a batch generation in flight) so the
-  // UI reflects the backend poller's resolution (→ AWAITING_REVIEW / FAILED)
-  // without a manual reload. The interval is torn down once nothing is queued.
-  const hasQueued = Boolean(project?.executions.some((e) => e.status === 'QUEUED'));
+  // Auto-refresh while any run is QUEUED (a batch generation in flight). Instead
+  // of refetching the whole project every tick, poll just the queued runs via the
+  // lightweight GET /api/phases/:id; only when one leaves QUEUED do we do a full
+  // reload (to refresh nextPhase / startablePhases / etc.). Polling pauses while
+  // the tab is hidden and resumes (with an immediate check) when it returns.
+  const queuedKey = (project?.executions ?? [])
+    .filter((e) => e.status === 'QUEUED')
+    .map((e) => e.id)
+    .join(',');
   useEffect(() => {
-    if (!hasQueued) return;
-    const timer = setInterval(() => {
-      void load();
-    }, 10_000);
-    return () => clearInterval(timer);
-  }, [hasQueued, load]);
+    if (!queuedKey) return;
+    const ids = queuedKey.split(',');
+    let stopped = false;
+    const poll = async (): Promise<void> => {
+      if (document.hidden) return;
+      try {
+        const runs = await Promise.all(ids.map((id) => api.getPhase(id)));
+        if (!stopped && runs.some((r) => r.status !== 'QUEUED')) {
+          await load();
+        }
+      } catch {
+        // Transient (e.g. network) — keep polling; a later tick will catch up.
+      }
+    };
+    const timer = setInterval(() => void poll(), 10_000);
+    const onVisible = (): void => {
+      if (!document.hidden) void poll();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [queuedKey, load]);
 
   const role = user?.role;
   const isOwner = Boolean(user && project && user.id === project.ownerId);

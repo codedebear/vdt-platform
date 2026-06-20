@@ -129,6 +129,18 @@ req POST "/api/projects/$PID/phases" "$SUPER" '{"phaseType":"PLANNER","input":"B
 EXEC="$(jget "['id']")"
 [ "$(jget "['status']")" = "IN_PROGRESS" ] && ok "started PLANNER run (IN_PROGRESS)" || bad "could not start an open run"
 
+# W1 fix: startable phases are now SERVER-computed (the UI no longer mirrors the
+# start rules). The project detail must expose a startablePhases array.
+req GET "/api/projects/$PID" "$OWNER"
+printf '%s' "$RESP_BODY" | python3 -c 'import sys,json;exit(0 if isinstance(json.load(sys.stdin).get("startablePhases"),list) else 1)' 2>/dev/null \
+  && ok "project detail exposes startablePhases (server source of truth)" || bad "startablePhases missing from project detail"
+
+# W2 fix: lightweight single-run read the UI polls for QUEUED runs (metadata only).
+req GET "/api/phases/$EXEC" "$SUPER"
+{ [ "$RESP_CODE" = "200" ] && [ -n "$(jget "['status']")" ]; } \
+  && ok "GET /api/phases/:id -> 200 with status (poll endpoint)" || bad "single-run GET -> $RESP_CODE"
+printf '%s' "$RESP_BODY" | grep -q '"data"' && bad "single-run GET leaked file bytes" || ok "single-run GET is metadata only"
+
 # Invalid mode — the UI only ever sends sync|batch, but the contract must reject.
 req POST "/api/phases/$EXEC/generate" "$SUPER" '{"mode":"turbo"}'
 [ "$RESP_CODE" = "422" ] && ok "generate { mode:'turbo' } -> 422 (validated)" || bad "invalid mode -> $RESP_CODE (expected 422)"

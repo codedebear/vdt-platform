@@ -5,7 +5,12 @@
 import { prisma } from '../config/prisma';
 import { env } from '../config/env';
 import { AppError } from '../middleware/errorHandler';
-import { getNextPhase, toExecutionSummaries, Track } from '../domain/workflow';
+import {
+  getNextPhase,
+  getStartablePhases,
+  toExecutionSummaries,
+  Track,
+} from '../domain/workflow';
 import { Role } from '../domain/permissions';
 import { initialBudgetUsd } from '../domain/budget';
 
@@ -106,9 +111,10 @@ export async function getProjectOrThrow(projectId: string) {
 /** Loads a project and annotates it with the next phase the engine suggests. */
 export async function getProjectWithNextPhase(projectId: string) {
   const project = await getProjectOrThrow(projectId);
-  const nextPhase = getNextPhase(
-    project.track as Track,
-    toExecutionSummaries(project.executions),
-  );
-  return { ...project, nextPhase };
+  const summaries = toExecutionSummaries(project.executions);
+  const track = project.track as Track;
+  const nextPhase = getNextPhase(track, summaries);
+  // Computed server-side so the client never re-implements the start rules.
+  const startablePhases = getStartablePhases(track, summaries);
+  return { ...project, nextPhase, startablePhases };
 }

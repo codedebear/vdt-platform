@@ -6,7 +6,12 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.middleware';
 import { generateRateLimiter, attachmentRateLimiter } from '../middleware/rateLimit';
 import { attachmentUpload } from '../middleware/upload';
-import { submitOutput, generatePhase, reviewPhase } from '../controllers/phase.controller';
+import {
+  submitOutput,
+  generatePhase,
+  reviewPhase,
+  getPhase,
+} from '../controllers/phase.controller';
 import {
   uploadAttachments,
   listAttachments,
@@ -16,6 +21,9 @@ import {
 export const phaseRouter = Router();
 
 phaseRouter.use(requireAuth);
+
+// Lightweight single-run read for status polling (e.g. a QUEUED batch run).
+phaseRouter.get('/:executionId', getPhase);
 
 phaseRouter.post('/:executionId/output', submitOutput);
 // Rate-limited (per user) because each call spends real API tokens; phase-type /

@@ -82,6 +82,9 @@ export interface ProjectListItem extends Project {
 export interface ProjectDetail extends Project {
   executions: PhaseExecution[];
   nextPhase: PhaseType | null;
+  /** Phases the engine says may be started now (server-computed; the UI no
+   *  longer re-implements the start rules — it just gates these by role). */
+  startablePhases: PhaseType[];
 }
 
 export interface CreateProjectInput {

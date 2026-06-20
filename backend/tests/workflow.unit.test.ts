@@ -5,6 +5,7 @@ import {
   PHASE_SEQUENCE,
   canStartPhase,
   getNextPhase,
+  getStartablePhases,
   isPhaseInTrack,
   isRepeatable,
   nextRunNumber,
@@ -160,5 +161,35 @@ describe('resolveReview', () => {
   it('throws when the run is not awaiting review', () => {
     expect(() => resolveReview('IN_PROGRESS', 'APPROVE')).toThrow(/expected AWAITING_REVIEW/);
     expect(() => resolveReview('APPROVED', 'APPROVE')).toThrow();
+  });
+});
+
+
+describe('getStartablePhases', () => {
+  it('offers only the first phase on an empty FULL_SDLC project', () => {
+    expect(getStartablePhases('FULL_SDLC', [])).toEqual(['PLANNER']);
+  });
+
+  it('advances to the next phase once the prior is approved', () => {
+    const execs = [exec('PLANNER', 'APPROVED')];
+    expect(getStartablePhases('FULL_SDLC', execs)).toEqual(['DEV']);
+  });
+
+  it('excludes a phase that has an open (incl. QUEUED) run', () => {
+    const execs = [exec('PLANNER', 'QUEUED')];
+    expect(getStartablePhases('FULL_SDLC', execs)).toEqual([]);
+  });
+
+  it('re-offers an approved repeatable phase (QA) with no open run', () => {
+    const execs = [
+      exec('PLANNER', 'APPROVED'),
+      exec('DEV', 'APPROVED'),
+      exec('QA', 'APPROVED'),
+      exec('CODE_REVIEW', 'APPROVED'),
+    ];
+    // QA is repeatable; the next unapproved phase (DOCS) is also startable.
+    const startable = getStartablePhases('FULL_SDLC', execs);
+    expect(startable).toContain('QA');
+    expect(startable).toContain('DOCS');
   });
 });

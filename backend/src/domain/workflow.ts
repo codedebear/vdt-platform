@@ -167,6 +167,21 @@ export function canStartPhase(
 }
 
 /**
+ * Every phase the user could start right now, in track order: the next
+ * unapproved phase plus any approved-but-repeatable phase whose prerequisites
+ * are met and that has no open run. This is the single source of truth the API
+ * exposes to clients so the UI does not re-implement {@link canStartPhase}.
+ */
+export function getStartablePhases(
+  track: Track,
+  executions: ExecutionSummary[],
+): PhaseType[] {
+  return PHASE_SEQUENCE[track].filter(
+    (phase) => canStartPhase(track, phase, executions).allowed,
+  );
+}
+
+/**
  * Resolves the resulting status of a phase execution after a human review
  * action. Only an AWAITING_REVIEW execution may be reviewed.
  * @throws {Error} if the execution is not awaiting review.
