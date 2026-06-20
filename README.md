@@ -83,6 +83,11 @@ gitignored — copy `.env.example` and fill it in.
 | `ATTACHMENT_MAX_TOTAL_MB` | — | `25` | Max combined size of a run's attachments. |
 | `ATTACHMENT_RATE_LIMIT_PER_MIN` | — | `20` | Per-user rate limit on attachment uploads (requests/minute). |
 | `ATTACHMENT_TEXT_CHAR_CAP` | — | `100000` | Max characters of extracted text included per non-PDF attachment when generating (caps token cost). |
+| `BATCH_ENABLED` | — | `true` | Enables batch-mode generation (`/generate` `mode=batch`) and the background poller. Set `false` to disable both. |
+| `BATCH_POLL_INTERVAL_MS` | — | `30000` | How often the in-process poller scans `QUEUED` runs for finished batches. |
+| `ANTHROPIC_BATCH_PRICE_FACTOR` | — | `0.5` | Fraction of standard token price charged for batch runs (Anthropic bills batches at 50%); used for batch budget reserve + settle. |
+| `BATCH_MAX_AGE_MS` | — | `93600000` | A `QUEUED` run older than this (default 26h, past the 24h batch SLA) is failed and its budget reservation released. |
+| `BATCH_SUBMIT_GRACE_MS` | — | `300000` | A `QUEUED` run still missing its `batchId` after this (default 5min = crashed/failed submit) is failed and its reservation released. |
 | `FRONTEND_PORT` | — | `8080` | Host port the frontend (nginx) container is published on. |
 | `VITE_API_BASE_URL` | — | *(empty)* | API origin baked into the SPA at build time. Leave empty for same-origin (nginx proxies `/api`); set only if the API is on a different origin. |
 
@@ -98,14 +103,26 @@ gitignored — copy `.env.example` and fill it in.
 **Phase run lifecycle (`PhaseExecution.status`):**
 `IN_PROGRESS → AWAITING_REVIEW → APPROVED` (or `CHANGES_REQUESTED` on a review
 that requests changes, which can be resubmitted; `FAILED` for a terminated run).
-Each *run* of a phase is a separate `PhaseExecution` row, so a phase can be
-re-run (e.g. QA after a change request) without overwriting history.
+A batch generation adds `QUEUED` (`IN_PROGRESS → QUEUED → AWAITING_REVIEW`, or
+`→ FAILED`). Each *run* of a phase is a separate `PhaseExecution` row, so a phase
+can be re-run (e.g. QA after a change request) without overwriting history.
+
+**Generation modes** — `/generate` accepts `mode: 'sync' | 'batch'` (default
+`sync`). `sync` calls Claude immediately and returns the output. `batch` submits
+the request to the [Anthropic Message Batches API](https://docs.anthropic.com/en/docs/build-with-claude/batch-processing)
+(~50% cheaper, asynchronous): the run goes to `QUEUED` and an in-process poller
+(`BATCH_POLL_INTERVAL_MS`) retrieves the result once the batch ends, advancing it
+to `AWAITING_REVIEW` (or `FAILED`). The poller works purely from the persisted
+`batchId`, so runs left `QUEUED` across a restart are picked up automatically;
+backstops (`BATCH_MAX_AGE_MS`, `BATCH_SUBMIT_GRACE_MS`) ensure a run never sticks
+in `QUEUED` forever. Both modes end at the same human review gate.
 
 **AI cost budget** — each project has a lifetime budget (`budgetUsd`, `null` =
 unlimited) and an accumulated `spentUsd`. Every AI generation's cost is estimated
 from its token usage at the model's per-million-token price (a built-in table,
-overridable via `ANTHROPIC_PRICE_*`; costs are *approximate* — cache/batch
-discounts are ignored) and added to `spentUsd`; the run keeps its own `costUsd`.
+overridable via `ANTHROPIC_PRICE_*`; batch runs apply `ANTHROPIC_BATCH_PRICE_FACTOR`;
+costs are *approximate* — prompt-cache discounts are ignored) and added to
+`spentUsd`; the run keeps its own `costUsd`.
 The budget is a **hard block**: a generation is reserved against the budget
 before the paid call and refused with `402` once the cap is reached, so it errs
 toward under-spending rather than overshooting. New projects start at
@@ -176,13 +193,18 @@ flowchart LR
 ### Per-run lifecycle (`PhaseExecution.status`)
 
 Every *run* of a phase is its own row. Output is produced either by Claude
-(`/generate`) or submitted manually (`/output`), then reviewed.
+(`/generate`, `mode=sync` or `mode=batch`) or submitted manually (`/output`),
+then reviewed.
 
 ```mermaid
 stateDiagram-v2
     [*] --> IN_PROGRESS: start phase
-    IN_PROGRESS --> AWAITING_REVIEW: generate / submit output
-    CHANGES_REQUESTED --> AWAITING_REVIEW: regenerate / resubmit
+    IN_PROGRESS --> AWAITING_REVIEW: generate (sync) / submit output
+    IN_PROGRESS --> QUEUED: generate (batch)
+    CHANGES_REQUESTED --> AWAITING_REVIEW: regenerate (sync) / resubmit
+    CHANGES_REQUESTED --> QUEUED: regenerate (batch)
+    QUEUED --> AWAITING_REVIEW: poller · batch succeeded
+    QUEUED --> FAILED: poller · batch errored / expired / abandoned
     AWAITING_REVIEW --> APPROVED: review APPROVE
     AWAITING_REVIEW --> CHANGES_REQUESTED: review REQUEST_CHANGES
     APPROVED --> [*]
@@ -286,23 +308,35 @@ Errors: `403` role not allowed, `404` project missing, `409` phase cannot start 
 All routes require authentication and act on an existing execution id.
 
 #### `POST /api/phases/:executionId/generate`
-Generates this run's output via Claude, then moves the run to `AWAITING_REVIEW`.
-The prompt is built from project context, the approved outputs of earlier phases,
-and **the run's attachments** — PDFs are sent to Claude as document blocks (read
-directly, including scanned pages); spreadsheets, Word and text files are
-extracted to text and appended to the prompt. **Per-user rate-limited** and
-**capped per run** (`GENERATE_MAX_PER_RUN` — counts attempts). It is also subject
-to the project's **AI cost budget**: before the (paid) call, an upper-bound cost
-is reserved against the project's `spentUsd` inside a serializable transaction;
-if that would exceed `budgetUsd` the call is refused with `402` and no tokens are
-spent. After a successful call the reserve is settled to the actual cost, the
-run's `costUsd` is recorded, and `spentUsd` is incremented.
-**Request body:** none.
-**Response:** `200 OK` with the updated execution (output, token usage, `costUsd`).
+Generates this run's output via Claude. The prompt is built from project context,
+the approved outputs of earlier phases, and **the run's attachments** — PDFs are
+sent to Claude as document blocks (read directly, including scanned pages);
+spreadsheets, Word and text files are extracted to text and appended to the
+prompt. **Per-user rate-limited** and **capped per run** (`GENERATE_MAX_PER_RUN` —
+counts attempts). It is also subject to the project's **AI cost budget**: before
+the (paid) call, an upper-bound cost is reserved against the project's `spentUsd`
+inside a serializable transaction; if that would exceed `budgetUsd` the call is
+refused with `402` and no tokens are spent.
+
+**Request body** (optional):
+```json
+{ "mode": "sync" }
+```
+`mode` is `sync` (default) or `batch`.
+
+- **`sync`** — calls Claude immediately, settles the reservation to the actual
+  cost, records the output + `costUsd`, and moves the run to `AWAITING_REVIEW`.
+  **Response:** `200 OK` with the updated execution.
+- **`batch`** — submits to the Anthropic Message Batches API (~50% cheaper, async)
+  and moves the run to `QUEUED` with a `batchId`; the reservation is held at the
+  batch rate. The background poller later retrieves the result and settles the run
+  to `AWAITING_REVIEW` (or `FAILED`, releasing the reservation).
+  **Response:** `202 Accepted` with the `QUEUED` execution.
+
 Errors: `402` project budget exhausted, `403` role not allowed, `404` missing,
 `409` invalid status or a concurrent generation conflict (retry),
-`429` rate limit or per-run cap reached, `502` upstream generation failed,
-`503` `ANTHROPIC_API_KEY` not configured.
+`422` invalid `mode`, `429` rate limit or per-run cap reached,
+`502` upstream generation/submission failed, `503` `ANTHROPIC_API_KEY` not configured.
 
 #### `POST /api/phases/:executionId/output`
 Submits a run's output manually (override / when not using AI generation), moving
@@ -517,10 +551,13 @@ gated behind a configured `ANTHROPIC_API_KEY`), `smoke-fe-doc1.sh` (the
 attachment-UI contract — `GET /api/config`, the StartPhaseCard start → upload
 sequence, list / add / delete, attachments embedded in project detail, and the
 approved-run read-only guard; includes an optional frontend build check, skipped
-off-toolchain or with `SKIP_BUILD=1`), and `smoke-debt1.sh` (the AI cost budget —
+off-toolchain or with `SKIP_BUILD=1`), `smoke-debt1.sh` (the AI cost budget —
 project budget fields, `PATCH /budget` guards, input max-length `422`, and the
 `budget = 0 → generate 402` hard block; real spend accounting gated behind
-`GEN_TEST=1`).
+`GEN_TEST=1`), and `smoke-batch1.sh` (batch generation — invalid-`mode` `422`,
+the unconfigured-batch `503` contract, and, behind `BATCH_TEST=1`, the full
+`202 → QUEUED → poller → AWAITING_REVIEW` loop plus the second-generate-on-QUEUED
+`409` guard; the real batch run spends ~half-price Claude tokens).
 
 ## Deployment
 

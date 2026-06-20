@@ -66,12 +66,17 @@ Fill in these keys:
 | `PROJECT_BUDGET_USD_DEFAULT` | `0` (default) — per-project AI budget seeded on new projects; `0` = unlimited |
 | `ANTHROPIC_PRICE_INPUT_PER_MTOK` / `_OUTPUT_PER_MTOK` | `0` (default) — override cost-estimate prices; `0` = built-in table |
 | `INPUT_MAX_CHARS` / `PRIOR_OUTPUT_MAX_CHARS` | `100000` / `20000` (defaults) — prompt cost guards |
+| `BATCH_ENABLED` | `true` (default) — enable batch-mode `/generate` + the background poller |
+| `BATCH_POLL_INTERVAL_MS` | `30000` (default) — how often the poller scans `QUEUED` runs |
+| `ANTHROPIC_BATCH_PRICE_FACTOR` | `0.5` (default) — batch price fraction for budget reserve/settle |
+| `BATCH_MAX_AGE_MS` / `BATCH_SUBMIT_GRACE_MS` | `93600000` / `300000` (defaults) — fail+release a run stuck `QUEUED` past 26h, or missing a `batchId` past 5min |
 
 > Do not commit this file. Keep the Neon password, JWT secret, and Anthropic key off git.
-> The `ANTHROPIC_*`, `GENERATE_*`, `PROJECT_BUDGET_*`, and prompt-cap keys have safe defaults
-> in `docker-compose.yml`, so you only need to set `ANTHROPIC_API_KEY` to enable AI generation;
-> the rest are optional. To cap AI spend per project, set `PROJECT_BUDGET_USD_DEFAULT` (or set
-> a per-project budget via `PATCH /api/projects/:id/budget`).
+> The `ANTHROPIC_*`, `GENERATE_*`, `PROJECT_BUDGET_*`, `BATCH_*`, and prompt-cap keys have safe
+> defaults in `docker-compose.yml`, so you only need to set `ANTHROPIC_API_KEY` to enable AI
+> generation; the rest are optional. To cap AI spend per project, set `PROJECT_BUDGET_USD_DEFAULT`
+> (or set a per-project budget via `PATCH /api/projects/:id/budget`). Batch generation reuses
+> `ANTHROPIC_API_KEY` (no extra secret); it is on by default and bills ~50% of the sync rate.
 
 ---
 
@@ -82,9 +87,13 @@ docker compose up --build -d
 ```
 
 On first start the container runs `prisma db push` to sync the schema
-(`User`, `Project`, `PhaseExecution`) to Neon, then boots the API. (Prisma's
-engine is generated inside the build on the Pi, so the correct ARM build is
-selected automatically.)
+(`User`, `Project`, `PhaseExecution`, `Attachment`) to Neon, then boots the API.
+Schema changes are additive, so deploying a new version is just
+`git pull && docker compose up --build -d` — the on-start `prisma db push` applies
+the new columns/enums (e.g. BE-BATCH-1's `PhaseExecution.batchId` + the `QUEUED`
+status) automatically; no manual migration step. (Prisma's engine is generated
+inside the build on the Pi, so the correct ARM build is selected automatically.)
+On boot you should see `Batch poller started (interval 30000ms)` in the logs.
 
 > **Assigning roles.** Every registration creates an `OPERATION` user. To grant
 > a worker or owner role, run SQL against Neon after the user registers, e.g.
@@ -147,6 +156,12 @@ curl -i -X POST http://localhost:4000/api/auth/register \
 **e) Frontend smoke** — expect `13/13` (SPA routing, security headers, `/api`+`/health` proxy)
 ```bash
 BASE_URL=http://localhost:8080 ./qa/smoke-frontend.sh
+```
+
+**f) Batch generation smoke** — contract checks (no Claude tokens); add `BATCH_TEST=1` for the full real loop
+```bash
+bash qa/smoke-batch1.sh                                  # mode 422, unconfigured-batch 503/202
+BATCH_TEST=1 POLL_TIMEOUT=300 bash qa/smoke-batch1.sh    # 202 -> QUEUED -> poller -> AWAITING_REVIEW (spends ~half-price tokens)
 ```
 
 ---
