@@ -13,6 +13,7 @@
  */
 import { prisma } from '../config/prisma';
 import { env } from '../config/env';
+import { AppError } from '../middleware/errorHandler';
 import {
   retrieveBatch,
   collectBatchResults,
@@ -33,10 +34,13 @@ let timer: ReturnType<typeof setInterval> | null = null;
  * Exposed for tests and the QA smoke (can be invoked with an injected client).
  */
 export async function pollQueuedBatches(client?: BatchGenerationClient): Promise<void> {
+  // Includes runs whose batchId is still null (submitted-pending or a submit that
+  // crashed) so they can be reconciled, not just runs with a known batch.
   const runs = await prisma.phaseExecution.findMany({
-    where: { status: 'QUEUED', batchId: { not: null } },
-    select: { id: true, projectId: true, batchId: true, costUsd: true },
+    where: { status: 'QUEUED' },
+    select: { id: true, projectId: true, batchId: true, costUsd: true, updatedAt: true },
   });
+  const now = Date.now();
 
   for (const run of runs) {
     const ref: QueuedRunRef = {
@@ -44,13 +48,39 @@ export async function pollQueuedBatches(client?: BatchGenerationClient): Promise
       projectId: run.projectId,
       reservedUsd: run.costUsd ?? 0,
     };
+    const ageMs = now - run.updatedAt.getTime();
+
+    // A QUEUED run that never got a batchId is a crashed/failed submission once
+    // the grace period passes; fail it and release the reservation.
+    if (!run.batchId) {
+      if (ageMs > env.batchSubmitGraceMs) {
+        await settleBatchRun(ref, {
+          status: 'FAILED',
+          succeeded: false,
+          reason: 'Batch submission did not complete',
+        });
+      }
+      continue;
+    }
+
+    // Hard age cutoff so a run never sticks in QUEUED forever (well past the 24h
+    // batch SLA): fail it and release the reservation regardless of batch state.
+    if (ageMs > env.batchMaxAgeMs) {
+      await settleBatchRun(ref, {
+        status: 'FAILED',
+        succeeded: false,
+        reason: 'Batch exceeded the maximum wait time and was abandoned',
+      });
+      continue;
+    }
+
     try {
-      const handle = await retrieveBatch(run.batchId as string, client);
+      const handle = await retrieveBatch(run.batchId, client);
       if (!isBatchEnded(handle.processing_status)) {
         continue;
       }
 
-      const results = await collectBatchResults(run.batchId as string, client);
+      const results = await collectBatchResults(run.batchId, client);
       const match = results.find((r) => r.custom_id === run.id);
       if (!match) {
         await settleBatchRun(ref, missingResultOutcome());
@@ -84,10 +114,22 @@ export async function pollQueuedBatches(client?: BatchGenerationClient): Promise
         });
       }
     } catch (err) {
-      // Transient (network / upstream) — leave the run QUEUED for the next tick.
+      // A terminal 404 (the batch no longer exists upstream) fails the run so it
+      // does not poll forever; everything else is transient — log and leave the
+      // run QUEUED for the next tick (the age cutoff above is the final backstop).
       const message = err instanceof Error ? err.message : String(err);
-      // eslint-disable-next-line no-console
-      console.error(`Batch poll error for run ${run.id}:`, message);
+      if (err instanceof AppError && err.statusCode === 404) {
+        // eslint-disable-next-line no-console
+        console.error(`Batch ${run.batchId} not found upstream for run ${run.id}; failing it`);
+        await settleBatchRun(ref, {
+          status: 'FAILED',
+          succeeded: false,
+          reason: 'Batch no longer exists upstream',
+        });
+      } else {
+        // eslint-disable-next-line no-console
+        console.error(`Batch poll error for run ${run.id}:`, message);
+      }
     }
   }
 }

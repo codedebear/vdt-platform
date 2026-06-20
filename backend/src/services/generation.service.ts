@@ -257,7 +257,14 @@ export async function retrieveBatch(
     const message = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line no-console
     console.error('Anthropic batch retrieve error:', message);
-    throw new AppError('AI batch status check failed upstream', 502);
+    // A 404 is terminal (the batch no longer exists upstream); surface it as 404
+    // so the poller can fail the run instead of polling it forever. Everything
+    // else is treated as transient (502) and the run is left QUEUED for a retry.
+    const status = (err as { status?: number })?.status;
+    throw new AppError(
+      status === 404 ? 'AI batch not found upstream' : 'AI batch status check failed upstream',
+      status === 404 ? 404 : 502,
+    );
   }
 }
 

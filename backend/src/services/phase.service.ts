@@ -292,6 +292,7 @@ async function reserveGenerationSlot(
   projectId: string,
   executionId: string,
   reserveUsd: number,
+  queue = false,
 ): Promise<void> {
   try {
     await prisma.$transaction(
@@ -309,13 +310,25 @@ async function reserveGenerationSlot(
             402,
           );
         }
+        // For the batch path, flip the run to QUEUED *in the same atomic claim*
+        // (no IN_PROGRESS window between reserving and queueing — closes the
+        // crash/clobber gap) and stash the reserved cost in costUsd for the
+        // poller to settle. The sync path only claims a slot.
         const claim = await tx.phaseExecution.updateMany({
           where: {
             id: executionId,
             status: { in: ['IN_PROGRESS', 'CHANGES_REQUESTED'] },
             generationCount: { lt: env.generateMaxPerRun },
           },
-          data: { generationCount: { increment: 1 } },
+          data: queue
+            ? {
+                generationCount: { increment: 1 },
+                status: 'QUEUED',
+                costUsd: reserveUsd,
+                inputTokens: null,
+                outputTokens: null,
+              }
+            : { generationCount: { increment: 1 } },
         });
         if (claim.count === 0) {
           throw new AppError(
@@ -447,7 +460,12 @@ export async function generatePhaseOutputBatch(
     env.anthropicBatchPriceFactor,
   );
 
-  await reserveGenerationSlot(projectId, executionId, reserveUsd);
+  // Atomically claim the slot, reserve budget, and move the run to QUEUED (batchId
+  // still null). There is no IN_PROGRESS window after this point, so a crash or a
+  // concurrent generate cannot leave a half-submitted run; the poller reconciles
+  // a QUEUED run whose batchId is still null after a grace period.
+  await reserveGenerationSlot(projectId, executionId, reserveUsd, true);
+  const ref: QueuedRunRef = { id: executionId, projectId, reservedUsd: reserveUsd };
 
   let batchId: string;
   try {
@@ -455,22 +473,31 @@ export async function generatePhaseOutputBatch(
     // result back to this run.
     batchId = await submitBatch(system, userPrompt, executionId, client, documents);
   } catch (err) {
-    await releaseReservation(projectId, reserveUsd);
+    // Submission failed: fail the already-QUEUED run and release the reservation.
+    await settleBatchRun(ref, {
+      status: 'FAILED',
+      succeeded: false,
+      reason: 'Batch submission failed',
+    });
     throw err;
   }
 
-  // Park the run as QUEUED, persisting the batch id (so the poller — and a
-  // restart — can find and finish it) and the reserved cost (settled later).
-  return prisma.phaseExecution.update({
-    where: { id: executionId },
-    data: {
-      status: 'QUEUED',
-      batchId,
-      costUsd: reserveUsd,
-      inputTokens: null,
-      outputTokens: null,
-    },
+  // Attach the batch id, guarded so this cannot clobber (or be clobbered by) a
+  // concurrent state change. If the run is no longer an unlinked QUEUED row, the
+  // batch becomes an orphan the poller ignores; release any reservation still held.
+  const linked = await prisma.phaseExecution.updateMany({
+    where: { id: executionId, status: 'QUEUED', batchId: null },
+    data: { batchId },
   });
+  if (linked.count === 0) {
+    await settleBatchRun(ref, {
+      status: 'FAILED',
+      succeeded: false,
+      reason: 'Run changed during batch submission',
+    });
+  }
+
+  return prisma.phaseExecution.findUnique({ where: { id: executionId } });
 }
 
 /** A QUEUED run as the poller needs it to settle: identity, owning project, and

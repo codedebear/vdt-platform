@@ -59,6 +59,13 @@ const envSchema = z.object({
   // Fraction of the standard token price charged for batch runs (Anthropic bills
   // batches at 50%). Used for the budget reservation + settle on batch runs.
   ANTHROPIC_BATCH_PRICE_FACTOR: z.coerce.number().positive().max(1).default(0.5),
+  // Safety cutoffs so a run never sticks in QUEUED forever (BE-BATCH-1 W1/W2).
+  // A QUEUED run older than BATCH_MAX_AGE_MS is failed and its budget released
+  // (default 26h, just past Anthropic's 24h batch SLA). A run still missing its
+  // batchId after BATCH_SUBMIT_GRACE_MS is treated as a crashed/failed submit
+  // and likewise failed + released (default 5 min).
+  BATCH_MAX_AGE_MS: z.coerce.number().int().positive().default(93_600_000),
+  BATCH_SUBMIT_GRACE_MS: z.coerce.number().int().positive().default(300_000),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -96,4 +103,6 @@ export const env = {
   batchEnabled: parsed.data.BATCH_ENABLED,
   batchPollIntervalMs: parsed.data.BATCH_POLL_INTERVAL_MS,
   anthropicBatchPriceFactor: parsed.data.ANTHROPIC_BATCH_PRICE_FACTOR,
+  batchMaxAgeMs: parsed.data.BATCH_MAX_AGE_MS,
+  batchSubmitGraceMs: parsed.data.BATCH_SUBMIT_GRACE_MS,
 };
