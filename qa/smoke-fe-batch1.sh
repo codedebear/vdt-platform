@@ -23,7 +23,8 @@
 #            the poller advances it to AWAITING_REVIEW, and a 2nd batch generate
 #            on a QUEUED run -> 409 (the UI hides actions while QUEUED).
 #
-# Without BATCH_TEST=1 no Claude tokens are spent.
+# Without BATCH_TEST=1 this performs at most one sync generate and, if a key is
+# configured, one batch submit (~50% rate); it does NOT poll/wait for the batch.
 #
 # Usage (run on the Pi, repo root, backend running):
 #   bash qa/smoke-fe-batch1.sh
@@ -133,47 +134,60 @@ req POST "/api/phases/$EXEC/generate" "$SUPER" '{"mode":"turbo"}'
 [ "$RESP_CODE" = "422" ] && ok "generate { mode:'turbo' } -> 422 (validated)" || bad "invalid mode -> $RESP_CODE (expected 422)"
 
 # "Generate with AI" button -> { mode:'sync' }: accepted (200 ok / 402 budget /
-# 503 no key) but NEVER a validation error.
+# 503 no key) but NEVER a validation error. (This consumes EXEC.)
 req POST "/api/phases/$EXEC/generate" "$SUPER" '{"mode":"sync"}'
 case "$RESP_CODE" in
   200|402|503) ok "generate { mode:'sync' } accepted (HTTP $RESP_CODE)";;
   *) bad "sync generate -> $RESP_CODE (expected 200/402/503, not a 4xx validation error)";;
 esac
 
+# The batch path needs its OWN fresh open run: the sync call above closed EXEC,
+# and PLANNER is non-repeatable so a new run must live on a new project.
+req POST /api/projects "$OWNER" '{"name":"FE-BATCH1 Smoke (batch)","track":"FULL_SDLC"}'
+BPID="$(jget "['id']")"
+req POST "/api/projects/$BPID/phases" "$SUPER" '{"phaseType":"PLANNER","input":"Build a todo API."}'
+BEXEC="$(jget "['id']")"
+[ "$(jget "['status']")" = "IN_PROGRESS" ] && ok "started a fresh PLANNER run for the batch test" || bad "could not start the batch run"
+
 if [ "$BATCH_TEST" != "1" ]; then
-  # Unconfigured batch path the UI's batch button hits without a real key.
-  req POST "/api/phases/$EXEC/generate" "$SUPER" '{"mode":"batch"}'
+  # "Generate (batch)" button -> { mode:'batch' } on an OPEN run. Tolerant, like
+  # qa/smoke-batch1.sh: 503 when no key, 202 when a key is set (a real batch is
+  # submitted; the poller resolves it), 402 if over budget. Else = contract break.
+  req POST "/api/phases/$BEXEC/generate" "$SUPER" '{"mode":"batch"}'
   case "$RESP_CODE" in
     503) ok "generate { mode:'batch' } unconfigured -> 503 (UI surfaces error)";;
-    202) skip "batch returned 202 (a key IS configured — run BATCH_TEST=1 for the full loop)";;
-    *) bad "batch (unconfigured) -> $RESP_CODE (expected 503)";;
+    202)
+      ok "generate { mode:'batch' } -> 202 (key set; batch submitted)"
+      [ "$(jget "['status']")" = "QUEUED" ] && ok "run is QUEUED (drives the badge + auto-refresh)" || bad "status not QUEUED"
+      [ -n "$(jget "['batchId']")" ] && ok "batchId recorded" || bad "batchId missing"
+      req POST "/api/phases/$BEXEC/generate" "$SUPER" '{"mode":"batch"}'
+      [ "$RESP_CODE" = "409" ] && ok "2nd generate on a QUEUED run -> 409 (UI hides actions)" || bad "re-generate on QUEUED -> $RESP_CODE (expected 409)"
+      echo "  (run BATCH_TEST=1 to also wait for the poller to reach AWAITING_REVIEW)"
+      ;;
+    402) skip "generate { mode:'batch' } -> 402 (project over budget on this host)";;
+    *) bad "batch -> $RESP_CODE (expected 503/202/402)";;
   esac
-  echo "  (set BATCH_TEST=1 to exercise the real 202 -> QUEUED -> poller loop)"
 else
   echo "Part B+ — real batch loop (BATCH_TEST=1, this spends tokens)"
-  # Fresh run so the sync generate above doesn't interfere.
-  req POST "/api/projects/$PID/phases" "$SUPER" '{"phaseType":"PLANNER","input":"Build a todo API."}' >/dev/null 2>&1
-  NEWEXEC="$(jget "['id']")"; [ -n "$NEWEXEC" ] && EXEC="$NEWEXEC"
-
-  req POST "/api/phases/$EXEC/generate" "$SUPER" '{"mode":"batch"}'
+  req POST "/api/phases/$BEXEC/generate" "$SUPER" '{"mode":"batch"}'
   [ "$RESP_CODE" = "202" ] && ok "batch generate -> 202 Accepted" || bad "batch generate -> $RESP_CODE (expected 202)"
   [ "$(jget "['status']")" = "QUEUED" ] && ok "run returned status QUEUED" || bad "status not QUEUED (got $(jget "['status']"))"
   [ -n "$(jget "['batchId']")" ] && ok "run carries a batchId (drives the queued badge)" || bad "batchId missing"
 
   # The UI's auto-refresh reads project detail; the run must read QUEUED there.
-  req GET "/api/projects/$PID" "$OWNER"
-  [ "$(exec_field "$EXEC" status)" = "QUEUED" ] && ok "project detail shows the run QUEUED (auto-refresh source)" || bad "project detail not QUEUED"
+  req GET "/api/projects/$BPID" "$OWNER"
+  [ "$(exec_field "$BEXEC" status)" = "QUEUED" ] && ok "project detail shows the run QUEUED (auto-refresh source)" || bad "project detail not QUEUED"
 
   # While QUEUED the UI hides the generate buttons; a 2nd generate must 409.
-  req POST "/api/phases/$EXEC/generate" "$SUPER" '{"mode":"batch"}'
+  req POST "/api/phases/$BEXEC/generate" "$SUPER" '{"mode":"batch"}'
   [ "$RESP_CODE" = "409" ] && ok "2nd generate on a QUEUED run -> 409" || bad "re-generate on QUEUED -> $RESP_CODE (expected 409)"
 
   echo "  Polling for the poller to resolve the run (<= ${POLL_TIMEOUT}s)…"
   WAITED=0; FINAL=""
   while [ "$WAITED" -lt "$POLL_TIMEOUT" ]; do
     sleep "$POLL_EVERY"; WAITED=$((WAITED+POLL_EVERY))
-    req GET "/api/projects/$PID" "$OWNER"
-    FINAL="$(exec_field "$EXEC" status)"
+    req GET "/api/projects/$BPID" "$OWNER"
+    FINAL="$(exec_field "$BEXEC" status)"
     [ "$FINAL" != "QUEUED" ] && break
   done
   case "$FINAL" in
