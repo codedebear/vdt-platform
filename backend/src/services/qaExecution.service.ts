@@ -110,7 +110,7 @@ export async function getTestRun(executionId: string, _actor: Actor) {
     include: {
       scenarios: {
         orderBy: { no: 'asc' },
-        include: { steps: { orderBy: { order: 'asc' } } },
+        include: { steps: { orderBy: { order: 'asc' }, include: { result: true } } },
       },
     },
   });
@@ -525,6 +525,61 @@ export async function recompileArtifacts(
   }
 
   await compileRunArtifacts(execution, feedback, client);
+  return getTestRun(executionId, actor);
+}
+
+/**
+ * Starts execution of a compiled run: validates the project has a non-prod target
+ * environment and that every step is compiled, resets per-step results to
+ * NOT_START, stamps the run's start time, and advances COMPILED → EXECUTING. The
+ * execution worker (QAX-3B/3C) then claims and runs it.
+ * @throws {AppError} 404/403 per guards, 409 if not COMPILED / no target / a step
+ *   is uncompiled / there are no steps.
+ */
+export async function startRun(executionId: string, actor: Actor) {
+  const execution = await loadWritableQaExecution(executionId, actor);
+  if (!execution.testRun) {
+    throw new AppError('No QA run has been started for this phase yet', 409);
+  }
+  const stage = execution.testRun.stage as QaStage;
+  if (stage !== 'COMPILED') {
+    throw new AppError(`A run can only be started from the COMPILED stage (current: ${stage})`, 409);
+  }
+
+  const target = await prisma.targetEnvironment.findUnique({
+    where: { projectId: execution.project.id },
+  });
+  if (!target) {
+    throw new AppError('Configure a non-production target environment before running', 409);
+  }
+  if (!target.isNonProd) {
+    throw new AppError('The target environment is not marked non-production; refusing to run', 409);
+  }
+
+  const scenarios = await prisma.testScenario.findMany({
+    where: { runId: execution.testRun.id },
+    include: { steps: { select: { id: true, artifactSpec: true } } },
+  });
+  const steps = scenarios.flatMap((s) => s.steps);
+  if (steps.length === 0) {
+    throw new AppError('There are no steps to run', 409);
+  }
+  if (steps.some((st) => st.artifactSpec == null)) {
+    throw new AppError('Some steps are not compiled; recompile before running', 409);
+  }
+
+  const stepIds = steps.map((st) => st.id);
+  await prisma.$transaction([
+    // Reset any previous results, then queue a NOT_START result per step.
+    prisma.testResult.deleteMany({ where: { stepId: { in: stepIds } } }),
+    prisma.testResult.createMany({
+      data: stepIds.map((stepId) => ({ stepId, status: 'NOT_START' as const })),
+    }),
+    prisma.testRun.update({
+      where: { id: execution.testRun.id },
+      data: { stage: advanceStage(stage, 'START_RUN'), startedAt: new Date(), finishedAt: null },
+    }),
+  ]);
   return getTestRun(executionId, actor);
 }
 

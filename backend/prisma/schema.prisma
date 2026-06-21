@@ -52,8 +52,47 @@ model Project {
   // AI generation on the project and is enforced as a hard block.
   budgetUsd   Float?
   spentUsd    Float            @default(0)
+  // QA execution config (QAX-3A): the non-prod target the compiled tests run
+  // against, and the encrypted secrets that resolve ${VAR} placeholders.
+  target      TargetEnvironment?
+  secrets     Secret[]
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
+}
+
+/// The non-production environment a project's compiled QA tests execute against
+/// (QAX-3A). One per project. `hostAllowlist` is the set of hosts the execution
+/// worker is permitted to hit (anything else is refused); `isNonProd` must stay
+/// true in v1 (prod execution is deferred).
+model TargetEnvironment {
+  id            String   @id @default(uuid())
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId     String   @unique
+  label         String?
+  baseUrl       String
+  hostAllowlist String[]
+  isNonProd     Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+/// A project-scoped secret (test credential / token) used to resolve a `${name}`
+/// placeholder in a compiled artifact at execute time (QAX-3A). The value is
+/// stored AES-256-GCM encrypted (ciphertext + iv + authTag, base64); the
+/// plaintext is never persisted, returned by the API, or logged.
+model Secret {
+  id         String   @id @default(uuid())
+  project    Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId  String
+  name       String
+  ciphertext String
+  iv         String
+  authTag    String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([projectId, name])
+  @@index([projectId])
 }
 
 /// One run of a single phase for a project. A phase type may have many runs

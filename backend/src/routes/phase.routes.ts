@@ -25,6 +25,7 @@ import {
   confirmSteps,
   recompileArtifacts,
   reviseStage,
+  startRun,
 } from '../controllers/qaExecution.controller';
 
 export const phaseRouter = Router();
@@ -62,3 +63,4 @@ phaseRouter.post('/:executionId/qa/steps/generate', generateRateLimiter, generat
 phaseRouter.post('/:executionId/qa/steps/confirm', generateRateLimiter, confirmSteps);
 phaseRouter.post('/:executionId/qa/artifacts/recompile', generateRateLimiter, recompileArtifacts);
 phaseRouter.post('/:executionId/qa/revise', reviseStage);
+phaseRouter.post('/:executionId/qa/run/start', startRun);

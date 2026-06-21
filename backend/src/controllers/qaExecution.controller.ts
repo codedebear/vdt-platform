@@ -140,6 +140,26 @@ export async function recompileArtifacts(
   }
 }
 
+/** POST /api/phases/:executionId/qa/run/start — start executing the compiled run. */
+export async function startRun(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const testRun = await qaService.startRun(req.params.executionId, {
+      id: req.user.id,
+      role: req.user.role,
+    });
+    res.status(200).json({ testRun });
+  } catch (err) {
+    next(err);
+  }
+}
+
 /** POST /api/phases/:executionId/qa/revise — move back to an earlier stage. */
 export async function reviseStage(
   req: Request,

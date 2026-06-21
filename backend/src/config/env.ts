@@ -66,6 +66,10 @@ const envSchema = z.object({
   // and likewise failed + released (default 5 min).
   BATCH_MAX_AGE_MS: z.coerce.number().int().positive().default(93_600_000),
   BATCH_SUBMIT_GRACE_MS: z.coerce.number().int().positive().default(300_000),
+  // Secrets vault master key (QAX-3A): 32 bytes as 64 hex chars or base64. Used to
+  // AES-256-GCM encrypt project secrets at rest. Optional so the app boots without
+  // it; secret create/use then fails with a clear 503. Never log this value.
+  SECRETS_KEY: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -105,4 +109,5 @@ export const env = {
   anthropicBatchPriceFactor: parsed.data.ANTHROPIC_BATCH_PRICE_FACTOR,
   batchMaxAgeMs: parsed.data.BATCH_MAX_AGE_MS,
   batchSubmitGraceMs: parsed.data.BATCH_SUBMIT_GRACE_MS,
+  secretsKey: parsed.data.SECRETS_KEY,
 };
