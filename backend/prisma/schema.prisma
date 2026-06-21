@@ -84,6 +84,9 @@ model PhaseExecution {
   // to retrieve results and move a QUEUED run to AWAITING_REVIEW or FAILED.
   batchId         String?
   attachments Attachment[]
+  // The staged QA-execution run attached to a QA phase (QAX-1). At most one per
+  // PhaseExecution; only QA-type runs have one. Cascade-deleted with the phase.
+  testRun     TestRun?
   startedAt   DateTime    @default(now())
   completedAt DateTime?
   createdAt   DateTime    @default(now())
@@ -91,6 +94,92 @@ model PhaseExecution {
 
   @@unique([projectId, phaseType, runNumber])
   @@index([projectId, phaseType])
+}
+
+/// One staged QA-execution run (QAX-1), 1:1 with a QA `PhaseExecution`. Holds the
+/// QA stage state machine plus the UATR document metadata, and is the root of the
+/// TestScenario → TestStep → TestResult tree that the UATR Excel export is built
+/// from. The QA flow's stage rules live in domain/qaExecution.ts.
+model TestRun {
+  id            String          @id @default(uuid())
+  execution     PhaseExecution  @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  executionId   String          @unique
+  stage         QaStage         @default(SCENARIO_DRAFT)
+  // UATR "Amendment" (document history) metadata.
+  version       String          @default("1.0")
+  preparedBy    String?
+  reviewedBy    String?
+  approvedBy    String?
+  // Rolled-up overall result for the UATR summary (computed from step results).
+  overallResult ScenarioResult?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  scenarios     TestScenario[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@index([executionId])
+}
+
+/// A single test case within a run — one block in the UATR "Detail Test Scenario
+/// Summary" sheet. `no` is the 1-based ordinal shown in the sheet's No. column.
+model TestScenario {
+  id        String          @id @default(uuid())
+  run       TestRun         @relation(fields: [runId], references: [id], onDelete: Cascade)
+  runId     String
+  no        Int
+  topic     String
+  testName  String
+  system    String?
+  remark    String?
+  // Rolled-up result for this scenario (UATR summary), computed from its steps.
+  result    ScenarioResult?
+  steps     TestStep[]
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  @@unique([runId, no])
+  @@index([runId])
+}
+
+/// One ordered step of a scenario (a row in the UATR detail sheet). Once the run
+/// reaches COMPILED, `artifactType`/`artifactSpec` hold the replayable executable
+/// (HTTP request spec or Playwright actions + assertion) the worker runs — built
+/// once by the AI, then re-run at zero token cost.
+model TestStep {
+  id             String            @id @default(uuid())
+  scenario       TestScenario      @relation(fields: [scenarioId], references: [id], onDelete: Cascade)
+  scenarioId     String
+  order          Int
+  stepName       String
+  expectedResult String
+  artifactType   TestArtifactType?
+  artifactSpec   Json?
+  result         TestResult?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@unique([scenarioId, order])
+  @@index([scenarioId])
+}
+
+/// The recorded outcome of executing one step in this run, 1:1 with a TestStep.
+/// `evidence` optionally stores a screenshot or response body inline (bytea) —
+/// keep it small; Neon's free tier is only 0.5GB, so a later sub-phase may move
+/// evidence to object storage behind the same interface.
+model TestResult {
+  id           String     @id @default(uuid())
+  step         TestStep   @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  stepId       String     @unique
+  status       TestStatus @default(NOT_START)
+  actualResult String?
+  evidence     Bytes?
+  evidenceMime String?
+  durationMs   Int?
+  executedAt   DateTime?
+  remark       String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
 }
 
 /// A document attached to a phase run, supplied as extra context the AI reads
@@ -142,4 +231,38 @@ enum PhaseStatus {
   APPROVED
   CHANGES_REQUESTED
   FAILED
+}
+
+/// Stages a staged QA-execution run (TestRun) moves through (QAX-1). The ordered
+/// transitions and roll-up rules live in domain/qaExecution.ts.
+enum QaStage {
+  SCENARIO_DRAFT
+  STEPS_DRAFT
+  COMPILED
+  EXECUTING
+  RESULTS_REVIEW
+  EXPORTED
+}
+
+/// Per-step execution status — the UATR detail sheet's "Status" column.
+enum TestStatus {
+  NOT_START
+  IN_PROGRESS
+  PASS
+  FAIL
+}
+
+/// Rolled-up result for a scenario or whole run — the UATR summary legend.
+enum ScenarioResult {
+  PASS
+  FAIL
+  IN_PROGRESS
+  NOT_COMPLETE
+  NO_RUN
+}
+
+/// What kind of executable a compiled step produces.
+enum TestArtifactType {
+  HTTP
+  BROWSER
 }
