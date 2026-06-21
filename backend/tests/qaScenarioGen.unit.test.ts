@@ -29,6 +29,38 @@ describe('buildScenarioPrompt', () => {
     expect(user).not.toContain('Description:');
     expect(user).not.toContain('Specification / context');
   });
+
+  it('stays in draft mode when no feedback is given', () => {
+    const { system, user } = buildScenarioPrompt({ projectName: 'P', input: 'spec' });
+    expect(system).not.toMatch(/REVISING/);
+    expect(user).not.toContain('Reviewer feedback');
+    expect(user).toContain('Return the JSON array of test scenarios now.');
+  });
+
+  it('switches to revision mode with feedback + current scenarios', () => {
+    const { system, user } = buildScenarioPrompt({
+      projectName: 'P',
+      input: 'spec',
+      feedback: 'add an edge case for expired tokens',
+      currentScenarios: [{ topic: 'Auth', testName: 'Login works' }],
+    });
+    expect(system).toMatch(/REVISING/);
+    expect(user).toContain('Current scenarios (revise these)');
+    expect(user).toContain('Login works');
+    expect(user).toContain('Reviewer feedback');
+    expect(user).toContain('expired tokens');
+    expect(user).toContain('full revised JSON array');
+  });
+
+  it('ignores feedback when there are no current scenarios to revise', () => {
+    const { system, user } = buildScenarioPrompt({
+      projectName: 'P',
+      feedback: 'do better',
+      currentScenarios: [],
+    });
+    expect(system).not.toMatch(/REVISING/);
+    expect(user).not.toContain('Reviewer feedback');
+  });
 });
 
 describe('extractJsonArray', () => {

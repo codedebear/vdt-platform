@@ -109,6 +109,12 @@ export async function getTestRun(executionId: string, _actor: Actor) {
  * the run's input plus any attached documents, and stores them as TestScenario
  * rows. Creates the TestRun on first use. Only allowed while the run is at the
  * SCENARIO_DRAFT stage; regenerating replaces the previous draft scenarios.
+ *
+ * When `feedback` is supplied and the run already has draft scenarios, the call
+ * is a guided revision: the current scenarios plus the feedback are fed back to
+ * Claude so it refines the list (the review → regenerate → review loop) instead
+ * of drafting from scratch.
+ * @param feedback - Optional reviewer feedback steering a regeneration.
  * @param client - Optional injected generation client (used by tests).
  * @throws {AppError} 404/403/409 per guards, 402 over budget, 502/503 on
  *   generation failure or unparseable output.
@@ -116,6 +122,7 @@ export async function getTestRun(executionId: string, _actor: Actor) {
 export async function generateScenarios(
   executionId: string,
   actor: Actor,
+  feedback?: string,
   client?: GenerationClient,
 ) {
   const execution = await loadWritableQaExecution(executionId, actor);
@@ -136,10 +143,31 @@ export async function generateScenarios(
     );
   }
 
+  // For a feedback-steered regeneration, load the current draft scenarios so the
+  // model revises them rather than starting over.
+  const trimmedFeedback = feedback?.trim();
+  const currentScenarios =
+    trimmedFeedback && execution.testRun
+      ? (
+          await prisma.testScenario.findMany({
+            where: { runId: execution.testRun.id },
+            orderBy: { no: 'asc' },
+            select: { topic: true, testName: true, system: true, remark: true },
+          })
+        ).map((s) => ({
+          topic: s.topic,
+          testName: s.testName,
+          ...(s.system ? { system: s.system } : {}),
+          ...(s.remark ? { remark: s.remark } : {}),
+        }))
+      : undefined;
+
   const { system, user } = buildScenarioPrompt({
     projectName: execution.project.name,
     description: execution.project.description ?? undefined,
     input: execution.input ? truncate(execution.input, env.inputMaxChars) : undefined,
+    feedback: trimmedFeedback ? truncate(trimmedFeedback, env.inputMaxChars) : undefined,
+    currentScenarios,
   });
 
   // Fold attachments in: PDFs as document blocks Claude reads directly, other

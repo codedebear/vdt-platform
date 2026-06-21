@@ -131,6 +131,12 @@ else
     printf 'FAIL  %-50s (got %s)\n' "  -> at least one scenario persisted" "$NSCEN"; FAIL=$((FAIL + 1))
   fi
 
+  # feedback-steered regeneration stays in SCENARIO_DRAFT (review -> regen loop)
+  req POST "/api/phases/$EXEC_QA/qa/scenarios/generate" "$T_QA" \
+    '{"feedback":"Add an edge case for an expired session token on the orders API."}'
+  check "QA regenerates with feedback -> 200" 200 "$RESP_CODE"
+  check "  -> still stage SCENARIO_DRAFT" "SCENARIO_DRAFT" "$(jget "['testRun']['stage']")"
+
   req POST "/api/phases/$EXEC_QA/qa/scenarios/confirm" "$T_QA" ""
   check "QA confirms scenarios -> 200" 200 "$RESP_CODE"
   check "  -> stage STEPS_DRAFT" "STEPS_DRAFT" "$(jget "['testRun']['stage']")"
