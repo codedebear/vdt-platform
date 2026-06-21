@@ -188,3 +188,122 @@ export function buildStepPrompt(ctx: QaStepPromptContext): BuiltQaPrompt {
 
   return { system, user: parts.join('\n') };
 }
+
+/** A step to compile into an executable artifact, with its identifying keys. */
+export interface CompileStepContext {
+  no: number;
+  order: number;
+  stepName: string;
+  expectedResult: string;
+  /** The current compiled artifact, supplied only for a feedback-steered recompile. */
+  artifact?: unknown;
+}
+
+/** A scenario whose steps are being compiled. */
+export interface CompileScenarioContext {
+  no: number;
+  testName: string;
+  system?: string;
+  steps: CompileStepContext[];
+}
+
+/** Everything the compile prompt needs about the QA run. */
+export interface QaCompilePromptContext {
+  projectName: string;
+  description?: string;
+  /** The run's spec/context, needed to ground paths, payloads and assertions. */
+  input?: string;
+  scenarios: CompileScenarioContext[];
+  /** Reviewer feedback steering a recompile. */
+  feedback?: string;
+}
+
+/** The contract description embedded in the compile prompt (kept in sync with
+ * domain/qaArtifact.ts). */
+const ARTIFACT_CONTRACT = [
+  'Each step compiles to ONE artifact object, one of two kinds:',
+  '',
+  'HTTP (an API request):',
+  '{ "kind": "HTTP", "request": { "method": "GET|POST|PUT|PATCH|DELETE", "path": "/relative/path",',
+  '  "headers": { ... optional }, "query": { ... optional, string values }, "body": { ... optional JSON } },',
+  '  "assertions": [ one or more of:',
+  '    { "type": "statusCode", "equals": 200 },',
+  '    { "type": "jsonPath", "path": "$.field", "equals": <value> }  (or "exists": true),',
+  '    { "type": "bodyContains", "text": "..." },',
+  '    { "type": "headerContains", "name": "content-type", "text": "application/json" } ] }',
+  '',
+  'BROWSER (ordered Playwright interactions):',
+  '{ "kind": "BROWSER", "actions": [ ordered, one or more of:',
+  '    { "type": "goto", "path": "/relative/path" },',
+  '    { "type": "click", "selector": <selector> },',
+  '    { "type": "fill", "selector": <selector>, "value": "..." },',
+  '    { "type": "select", "selector": <selector>, "value": "..." },',
+  '    { "type": "waitFor", "selector": <selector> } ],',
+  '  "assertions": [ one or more of:',
+  '    { "type": "textVisible", "text": "..." },',
+  '    { "type": "urlContains", "text": "/dashboard" },',
+  '    { "type": "elementVisible", "selector": <selector> } ] }',
+  '',
+  'A <selector> is a resilient locator object with at least ONE of:',
+  '  "role" (+ optional "name"), "label", "text", "testId", or "css" (last-resort fallback).',
+  'Prefer role/label/text over css.',
+  '',
+  'CRITICAL rules:',
+  '- "path" is always RELATIVE (e.g. "/api/orders"); never include a host or base URL.',
+  '- For any secret or test data (credentials, tokens, ids), use a "${VAR}" placeholder',
+  '  (e.g. "${TEST_USER}") — NEVER a real secret value.',
+  '- Choose HTTP for API-level checks and BROWSER for UI checks, per the step.',
+].join('\n');
+
+/**
+ * Builds the system + user prompt that compiles each confirmed step into an
+ * executable {@link ArtifactSpec}. The model must return ONLY a JSON array of
+ * objects shaped: { "no": <scenario no>, "order": <step order>, "artifact": <artifact> },
+ * one entry per step. With `feedback` (and current artifacts present), it switches
+ * to a REVISION task that refines the existing artifacts.
+ */
+export function buildCompilePrompt(ctx: QaCompilePromptContext): BuiltQaPrompt {
+  const isRevision =
+    !!ctx.feedback &&
+    ctx.feedback.trim().length > 0 &&
+    ctx.scenarios.some((s) => s.steps.some((st) => st.artifact !== undefined));
+
+  const system = [
+    'You are a QA automation compiler at Code De Bear. You convert confirmed manual',
+    'test steps into deterministic, replayable execution artifacts that a plain',
+    'executor (no AI) can run against a non-production environment.',
+    isRevision
+      ? 'You are REVISING existing artifacts according to reviewer feedback: keep the good ones and adjust as directed. Return the FULL updated array.'
+      : '',
+    'Return ONLY a JSON array — no prose, no explanation, no Markdown code fences.',
+    'Return exactly one element per step, shaped:',
+    '{ "no": <scenario number>, "order": <step order>, "artifact": <artifact object> }.',
+    '',
+    ARTIFACT_CONTRACT,
+  ]
+    .filter((s) => s.length > 0)
+    .join('\n');
+
+  const parts: string[] = [];
+  parts.push(`# Project: ${ctx.projectName}`);
+  if (ctx.description && ctx.description.trim().length > 0) {
+    parts.push(`Description: ${ctx.description.trim()}`);
+  }
+  if (ctx.input && ctx.input.trim().length > 0) {
+    parts.push(`\n## Specification / context\n${ctx.input.trim()}`);
+  }
+  parts.push(`\n## Steps to compile\n${JSON.stringify(ctx.scenarios, null, 2)}`);
+
+  if (isRevision) {
+    parts.push(`\n## Reviewer feedback — apply this\n${ctx.feedback!.trim()}`);
+    parts.push(
+      '\n## Your task\nReturn the full revised JSON array of compiled artifacts (one per step), incorporating the feedback, now.',
+    );
+  } else {
+    parts.push(
+      '\n## Your task\nReturn the JSON array of compiled artifacts (one per step) now.',
+    );
+  }
+
+  return { system, user: parts.join('\n') };
+}

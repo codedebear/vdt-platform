@@ -22,6 +22,9 @@ import {
   generateScenarios,
   confirmScenarios,
   generateSteps,
+  confirmSteps,
+  recompileArtifacts,
+  reviseStage,
 } from '../controllers/qaExecution.controller';
 
 export const phaseRouter = Router();
@@ -56,3 +59,6 @@ phaseRouter.get('/:executionId/qa', getTestRun);
 phaseRouter.post('/:executionId/qa/scenarios/generate', generateRateLimiter, generateScenarios);
 phaseRouter.post('/:executionId/qa/scenarios/confirm', confirmScenarios);
 phaseRouter.post('/:executionId/qa/steps/generate', generateRateLimiter, generateSteps);
+phaseRouter.post('/:executionId/qa/steps/confirm', generateRateLimiter, confirmSteps);
+phaseRouter.post('/:executionId/qa/artifacts/recompile', generateRateLimiter, recompileArtifacts);
+phaseRouter.post('/:executionId/qa/revise', reviseStage);

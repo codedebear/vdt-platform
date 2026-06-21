@@ -14,16 +14,24 @@
  * this flow is human-gated step by step with low concurrency, so it does not need
  * the Serializable reserve/settle slot machinery; it can adopt it later if needed.
  */
+import { Prisma } from '@prisma/client';
 import { env } from '../config/env';
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/errorHandler';
 import { can, Role } from '../domain/permissions';
 import { PhaseType } from '../domain/workflow';
-import { QaStage, advanceStage } from '../domain/qaExecution';
-import { buildScenarioPrompt, buildStepPrompt, StepScenarioContext } from '../domain/qaPrompts';
+import { QaStage, advanceStage, reviseStage as reviseStageRule } from '../domain/qaExecution';
+import {
+  buildScenarioPrompt,
+  buildStepPrompt,
+  buildCompilePrompt,
+  StepScenarioContext,
+  CompileScenarioContext,
+} from '../domain/qaPrompts';
 import {
   parseScenarioDrafts,
   parseScenarioStepsDrafts,
+  parseCompiledArtifacts,
   QaParseError,
 } from '../domain/qaParsing';
 import { estimateCostUsd } from '../domain/pricing';
@@ -357,6 +365,191 @@ export async function generateSteps(
     });
   });
 
+  return getTestRun(executionId, actor);
+}
+
+/**
+ * Compiles every step of a run into an executable artifactSpec with Claude and
+ * stores `artifactType` + `artifactSpec` on each matched TestStep. Shared by
+ * {@link confirmSteps} (first compile) and {@link recompileArtifacts} (feedback
+ * loop). When `feedback` is given, current artifacts are fed back so the model
+ * refines them. Returns nothing; throws on failure.
+ * @throws {AppError} 409 no scenarios/steps, 502 on unparseable/empty compile.
+ */
+async function compileRunArtifacts(
+  execution: { id: string; testRun: { id: string } | null; input: string | null; project: { id: string; name: string; description: string | null } },
+  feedback: string | undefined,
+  client?: GenerationClient,
+): Promise<void> {
+  const runId = execution.testRun!.id;
+  const scenarios = await prisma.testScenario.findMany({
+    where: { runId },
+    orderBy: { no: 'asc' },
+    include: { steps: { orderBy: { order: 'asc' } } },
+  });
+  const totalSteps = scenarios.reduce((n, s) => n + s.steps.length, 0);
+  if (totalSteps === 0) {
+    throw new AppError('There are no steps to compile', 409);
+  }
+
+  const trimmedFeedback = feedback?.trim();
+  const scenarioContexts: CompileScenarioContext[] = scenarios.map((s) => ({
+    no: s.no,
+    testName: s.testName,
+    ...(s.system ? { system: s.system } : {}),
+    steps: s.steps.map((st) => ({
+      no: s.no,
+      order: st.order,
+      stepName: st.stepName,
+      expectedResult: st.expectedResult,
+      ...(trimmedFeedback && st.artifactSpec != null ? { artifact: st.artifactSpec } : {}),
+    })),
+  }));
+
+  const { system, user } = buildCompilePrompt({
+    projectName: execution.project.name,
+    description: execution.project.description ?? undefined,
+    input: execution.input ? truncate(execution.input, env.inputMaxChars) : undefined,
+    scenarios: scenarioContexts,
+    feedback: trimmedFeedback ? truncate(trimmedFeedback, env.inputMaxChars) : undefined,
+  });
+
+  const result = await generateText(system, user, client);
+
+  let compiled;
+  try {
+    compiled = parseCompiledArtifacts(result.text);
+  } catch (err) {
+    if (err instanceof QaParseError) {
+      throw new AppError(`AI returned artifacts that could not be parsed: ${err.message}`, 502);
+    }
+    throw err;
+  }
+
+  // Map each compiled artifact back to a step by (scenario no, step order).
+  const stepByKey = new Map<string, string>();
+  for (const s of scenarios) {
+    for (const st of s.steps) {
+      stepByKey.set(`${s.no}:${st.order}`, st.id);
+    }
+  }
+  const updates = compiled.flatMap((c) => {
+    const stepId = stepByKey.get(`${c.no}:${c.order}`);
+    if (!stepId) return [];
+    return [{ stepId, kind: c.artifact.kind, spec: c.artifact as Prisma.InputJsonValue }];
+  });
+  if (updates.length === 0) {
+    throw new AppError('AI returned no artifacts matching the existing steps', 502);
+  }
+
+  const actualCostUsd = estimateCostUsd(
+    env.anthropicModel,
+    result.inputTokens,
+    result.outputTokens,
+    priceOverrideFromEnv(),
+  );
+
+  await prisma.$transaction([
+    ...updates.map((u) =>
+      prisma.testStep.update({
+        where: { id: u.stepId },
+        data: { artifactType: u.kind, artifactSpec: u.spec },
+      }),
+    ),
+    prisma.project.update({
+      where: { id: execution.project.id },
+      data: { spentUsd: { increment: actualCostUsd } },
+    }),
+  ]);
+}
+
+/**
+ * Confirms the drafted steps and compiles them: runs the compile call, stores an
+ * artifactSpec on each step, and advances the run from STEPS_DRAFT to COMPILED.
+ * @param client - Optional injected generation client (used by tests).
+ * @throws {AppError} 404/403/409 per guards, 402 over budget, 502/503 on compile.
+ */
+export async function confirmSteps(executionId: string, actor: Actor, client?: GenerationClient) {
+  const execution = await loadWritableQaExecution(executionId, actor);
+  if (!execution.testRun) {
+    throw new AppError('No QA run has been started for this phase yet', 409);
+  }
+  const stage = execution.testRun.stage as QaStage;
+  if (stage !== 'STEPS_DRAFT') {
+    throw new AppError(
+      `Steps can only be confirmed/compiled at the STEPS_DRAFT stage (current: ${stage})`,
+      409,
+    );
+  }
+  if (isBudgetExhausted(execution.project.spentUsd, execution.project.budgetUsd)) {
+    throw new AppError(
+      `This project has reached its AI budget ($${execution.project.budgetUsd?.toFixed(2)}); ask an admin to raise it`,
+      402,
+    );
+  }
+
+  await compileRunArtifacts(execution, undefined, client);
+  await prisma.testRun.update({
+    where: { id: execution.testRun.id },
+    data: { stage: advanceStage(stage, 'CONFIRM_STEPS') },
+  });
+  return getTestRun(executionId, actor);
+}
+
+/**
+ * Recompiles the artifacts of an already-COMPILED run, optionally steered by
+ * reviewer `feedback` (the review → regenerate → review loop at the compile
+ * stage). The run stays at COMPILED.
+ * @param client - Optional injected generation client (used by tests).
+ * @throws {AppError} 404/403/409 per guards, 402 over budget, 502/503 on compile.
+ */
+export async function recompileArtifacts(
+  executionId: string,
+  actor: Actor,
+  feedback?: string,
+  client?: GenerationClient,
+) {
+  const execution = await loadWritableQaExecution(executionId, actor);
+  if (!execution.testRun) {
+    throw new AppError('No QA run has been started for this phase yet', 409);
+  }
+  const stage = execution.testRun.stage as QaStage;
+  if (stage !== 'COMPILED') {
+    throw new AppError(`Artifacts can only be recompiled at the COMPILED stage (current: ${stage})`, 409);
+  }
+  if (isBudgetExhausted(execution.project.spentUsd, execution.project.budgetUsd)) {
+    throw new AppError(
+      `This project has reached its AI budget ($${execution.project.budgetUsd?.toFixed(2)}); ask an admin to raise it`,
+      402,
+    );
+  }
+
+  await compileRunArtifacts(execution, feedback, client);
+  return getTestRun(executionId, actor);
+}
+
+/**
+ * Moves a run back to an earlier stage (a "request changes" within the QA flow,
+ * e.g. COMPILED → STEPS_DRAFT to revise steps). The target must be strictly
+ * earlier; downstream drafts are replaced when regenerated at the target stage.
+ * @throws {AppError} 404/403/409 per guards (409 if the target is not earlier).
+ */
+export async function reviseStage(executionId: string, actor: Actor, target: QaStage) {
+  const execution = await loadWritableQaExecution(executionId, actor);
+  if (!execution.testRun) {
+    throw new AppError('No QA run has been started for this phase yet', 409);
+  }
+  const stage = execution.testRun.stage as QaStage;
+  let nextStage: QaStage;
+  try {
+    nextStage = reviseStageRule(stage, target);
+  } catch (err) {
+    throw new AppError((err as Error).message, 409);
+  }
+  await prisma.testRun.update({
+    where: { id: execution.testRun.id },
+    data: { stage: nextStage },
+  });
   return getTestRun(executionId, actor);
 }
 

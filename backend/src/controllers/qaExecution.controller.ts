@@ -19,6 +19,11 @@ const feedbackSchema = z.object({
     .optional(),
 });
 
+// Target stage for a back-navigation ("request changes" within the QA flow).
+const reviseSchema = z.object({
+  targetStage: z.enum(['SCENARIO_DRAFT', 'STEPS_DRAFT', 'COMPILED', 'EXECUTING', 'RESULTS_REVIEW']),
+});
+
 /** GET /api/phases/:executionId/qa — fetch the QA run (scenarios + steps) or null. */
 export async function getTestRun(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -77,6 +82,79 @@ export async function generateSteps(
       req.params.executionId,
       { id: req.user.id, role: req.user.role },
       feedback,
+    );
+    res.status(200).json({ testRun });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
+      return;
+    }
+    next(err);
+  }
+}
+
+/** POST /api/phases/:executionId/qa/steps/confirm — compile steps → COMPILED. */
+export async function confirmSteps(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const testRun = await qaService.confirmSteps(req.params.executionId, {
+      id: req.user.id,
+      role: req.user.role,
+    });
+    res.status(200).json({ testRun });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /api/phases/:executionId/qa/artifacts/recompile — recompile artifacts
+ * (optional `feedback` steers the revision); stays at COMPILED. */
+export async function recompileArtifacts(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const { feedback } = feedbackSchema.parse(req.body ?? {});
+    const testRun = await qaService.recompileArtifacts(
+      req.params.executionId,
+      { id: req.user.id, role: req.user.role },
+      feedback,
+    );
+    res.status(200).json({ testRun });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
+      return;
+    }
+    next(err);
+  }
+}
+
+/** POST /api/phases/:executionId/qa/revise — move back to an earlier stage. */
+export async function reviseStage(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const { targetStage } = reviseSchema.parse(req.body);
+    const testRun = await qaService.reviseStage(
+      req.params.executionId,
+      { id: req.user.id, role: req.user.role },
+      targetStage,
     );
     res.status(200).json({ testRun });
   } catch (err) {

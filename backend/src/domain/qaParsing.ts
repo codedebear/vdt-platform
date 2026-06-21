@@ -10,6 +10,7 @@
  * the whole generation.
  */
 import { z } from 'zod';
+import { artifactSpecSchema, ArtifactSpec } from './qaArtifact';
 
 /** A drafted test scenario — one block in the UATR "Detail" sheet. */
 export interface ScenarioDraft {
@@ -161,4 +162,52 @@ export function parseScenarioStepsDrafts(text: string): ScenarioStepsDraft[] {
     no: g.no,
     steps: g.steps.map((s) => ({ stepName: s.stepName, expectedResult: s.expectedResult })),
   }));
+}
+
+/** The compiled artifact for one step, keyed back to its (scenario no, step order). */
+export interface CompiledStepArtifact {
+  no: number;
+  order: number;
+  artifact: ArtifactSpec;
+}
+
+const compiledArtifactSchema = z
+  .object({
+    no: z.number().int().positive('no must be a positive scenario number'),
+    order: z.number().int().positive('order must be a positive step number'),
+    artifact: artifactSpecSchema,
+  })
+  .strip();
+
+const compiledArtifactArraySchema = z.array(compiledArtifactSchema);
+
+/**
+ * Parses and validates the model's compile output: one entry per step, each
+ * carrying its (scenario `no`, step `order`) and a fully-validated artifactSpec.
+ * The caller maps each entry back to a TestStep by (no, order).
+ * @throws {QaParseError} if the JSON is malformed, not an array, empty, or any
+ *   artifact fails the contract validation.
+ */
+export function parseCompiledArtifacts(text: string): CompiledStepArtifact[] {
+  const json = extractJsonArray(text);
+
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch (err) {
+    throw new QaParseError(`Model compile output was not valid JSON: ${(err as Error).message}`);
+  }
+
+  const result = compiledArtifactArraySchema.safeParse(data);
+  if (!result.success) {
+    const detail = result.error.errors
+      .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
+      .join('; ');
+    throw new QaParseError(`Model compile output failed validation: ${detail}`);
+  }
+  if (result.data.length === 0) {
+    throw new QaParseError('Model compiled no steps');
+  }
+
+  return result.data.map((e) => ({ no: e.no, order: e.order, artifact: e.artifact }));
 }
