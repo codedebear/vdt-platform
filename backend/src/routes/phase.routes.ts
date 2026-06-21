@@ -17,6 +17,11 @@ import {
   listAttachments,
   deleteAttachment,
 } from '../controllers/attachment.controller';
+import {
+  getTestRun,
+  generateScenarios,
+  confirmScenarios,
+} from '../controllers/qaExecution.controller';
 
 export const phaseRouter = Router();
 
@@ -42,3 +47,10 @@ phaseRouter.post(
 );
 phaseRouter.get('/:executionId/attachments', listAttachments);
 phaseRouter.delete('/:executionId/attachments/:attachmentId', deleteAttachment);
+
+// Staged QA execution flow (QAX-2). Scenario generation spends API tokens, so it
+// is rate-limited per user; QA-phase / worker-role / status / budget rules live
+// in the service layer.
+phaseRouter.get('/:executionId/qa', getTestRun);
+phaseRouter.post('/:executionId/qa/scenarios/generate', generateRateLimiter, generateScenarios);
+phaseRouter.post('/:executionId/qa/scenarios/confirm', confirmScenarios);
