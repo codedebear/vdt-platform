@@ -12,6 +12,7 @@ import { healthRouter } from './routes/health.routes';
 import { projectRouter } from './routes/project.routes';
 import { phaseRouter } from './routes/phase.routes';
 import { userRouter } from './routes/user.routes';
+import { workerRouter } from './routes/worker.routes';
 import { errorHandler } from './middleware/errorHandler';
 
 /**
@@ -22,7 +23,10 @@ export function createApp(): Express {
 
   app.use(helmet());
   app.use(cors());
-  app.use(express.json());
+  // 5MB JSON limit so the worker can submit step results with inline evidence
+  // (response bodies now; browser screenshots in QAX-4). Logical content is still
+  // bounded by per-field zod caps and the per-step evidence size check.
+  app.use(express.json({ limit: '5mb' }));
 
   app.use('/health', healthRouter);
   app.use('/api/config', configRouter);
@@ -30,6 +34,7 @@ export function createApp(): Express {
   app.use('/api/projects', projectRouter);
   app.use('/api/phases', phaseRouter);
   app.use('/api/users', userRouter);
+  app.use('/api/worker', workerRouter);
 
   app.use(errorHandler);
 

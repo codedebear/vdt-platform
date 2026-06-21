@@ -153,11 +153,18 @@ model TestRun {
   overallResult ScenarioResult?
   startedAt     DateTime?
   finishedAt    DateTime?
+  // Execution-worker lease (QAX-3B). While a run is EXECUTING a worker claims it
+  // by setting claimedBy + a leaseExpiresAt in the future; the claim is released
+  // (or expires) so another worker can pick up an abandoned run.
+  claimedAt      DateTime?
+  claimedBy      String?
+  leaseExpiresAt DateTime?
   scenarios     TestScenario[]
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 
   @@index([executionId])
+  @@index([stage])
 }
 
 /// A single test case within a run — one block in the UATR "Detail Test Scenario

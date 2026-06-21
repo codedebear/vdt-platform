@@ -70,6 +70,12 @@ const envSchema = z.object({
   // AES-256-GCM encrypt project secrets at rest. Optional so the app boots without
   // it; secret create/use then fails with a clear 503. Never log this value.
   SECRETS_KEY: z.string().optional(),
+  // Execution worker (QAX-3B): shared bearer token the worker presents to claim
+  // jobs and submit results. Optional so the app boots without it; the worker
+  // endpoints return 503 until set. WORKER_LEASE_MS is how long a claim is held
+  // before it may be reclaimed by another worker (the worker heartbeats to renew).
+  WORKER_TOKEN: z.string().optional(),
+  WORKER_LEASE_MS: z.coerce.number().int().positive().default(120000),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -110,4 +116,6 @@ export const env = {
   batchMaxAgeMs: parsed.data.BATCH_MAX_AGE_MS,
   batchSubmitGraceMs: parsed.data.BATCH_SUBMIT_GRACE_MS,
   secretsKey: parsed.data.SECRETS_KEY,
+  workerToken: parsed.data.WORKER_TOKEN,
+  workerLeaseMs: parsed.data.WORKER_LEASE_MS,
 };

@@ -12,7 +12,7 @@ import { prisma } from '../config/prisma';
 import { env } from '../config/env';
 import { AppError } from '../middleware/errorHandler';
 import { Role } from '../domain/permissions';
-import { encrypt, keyFromString } from '../domain/crypto';
+import { encrypt, decrypt, keyFromString } from '../domain/crypto';
 
 /** The authenticated user performing an action. */
 export interface Actor {
@@ -158,4 +158,24 @@ export async function deleteSecret(projectId: string, actor: Actor, name: string
   await prisma.secret
     .delete({ where: { projectId_name: { projectId, name } } })
     .catch(() => undefined);
+}
+
+/**
+ * Decrypts all of a project's secrets into a `{ name: value }` map for the
+ * execution worker to resolve `${VAR}` placeholders at run time. No user-facing
+ * authorization here — the only caller is the worker service, which is gated by
+ * the worker token. Returns an empty map if the project has no secrets.
+ * @throws {AppError} 503 if the vault key is unset/invalid.
+ */
+export async function getDecryptedSecrets(projectId: string): Promise<Record<string, string>> {
+  const secrets = await prisma.secret.findMany({ where: { projectId } });
+  if (secrets.length === 0) {
+    return {};
+  }
+  const key = secretsKey();
+  const out: Record<string, string> = {};
+  for (const s of secrets) {
+    out[s.name] = decrypt({ ciphertext: s.ciphertext, iv: s.iv, authTag: s.authTag }, key);
+  }
+  return out;
 }
