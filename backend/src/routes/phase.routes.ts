@@ -21,6 +21,7 @@ import {
   getTestRun,
   generateScenarios,
   confirmScenarios,
+  generateSteps,
 } from '../controllers/qaExecution.controller';
 
 export const phaseRouter = Router();
@@ -54,3 +55,4 @@ phaseRouter.delete('/:executionId/attachments/:attachmentId', deleteAttachment);
 phaseRouter.get('/:executionId/qa', getTestRun);
 phaseRouter.post('/:executionId/qa/scenarios/generate', generateRateLimiter, generateScenarios);
 phaseRouter.post('/:executionId/qa/scenarios/confirm', confirmScenarios);
+phaseRouter.post('/:executionId/qa/steps/generate', generateRateLimiter, generateSteps);

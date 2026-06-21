@@ -9,9 +9,10 @@ import { AppError } from '../middleware/errorHandler';
 import { env } from '../config/env';
 import * as qaService from '../services/qaExecution.service';
 
-// Optional reviewer feedback steering a scenario regeneration; bounded to keep
-// prompt cost in check. An empty body regenerates from the spec as before.
-const generateScenariosSchema = z.object({
+// Optional reviewer feedback steering a regeneration; bounded to keep prompt cost
+// in check. An empty body regenerates from the spec/scenarios as before. Shared by
+// the scenario and step generate endpoints.
+const feedbackSchema = z.object({
   feedback: z
     .string()
     .max(env.inputMaxChars, `Feedback must be at most ${env.inputMaxChars} characters`)
@@ -44,8 +45,35 @@ export async function generateScenarios(
     if (!req.user) {
       throw new AppError('Unauthorized', 401);
     }
-    const { feedback } = generateScenariosSchema.parse(req.body ?? {});
+    const { feedback } = feedbackSchema.parse(req.body ?? {});
     const testRun = await qaService.generateScenarios(
+      req.params.executionId,
+      { id: req.user.id, role: req.user.role },
+      feedback,
+    );
+    res.status(200).json({ testRun });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
+      return;
+    }
+    next(err);
+  }
+}
+
+/** POST /api/phases/:executionId/qa/steps/generate — AI-draft steps for the
+ * confirmed scenarios (optional `feedback` steers a regeneration). */
+export async function generateSteps(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const { feedback } = feedbackSchema.parse(req.body ?? {});
+    const testRun = await qaService.generateSteps(
       req.params.executionId,
       { id: req.user.id, role: req.user.role },
       feedback,

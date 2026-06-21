@@ -20,8 +20,12 @@ import { AppError } from '../middleware/errorHandler';
 import { can, Role } from '../domain/permissions';
 import { PhaseType } from '../domain/workflow';
 import { QaStage, advanceStage } from '../domain/qaExecution';
-import { buildScenarioPrompt } from '../domain/qaPrompts';
-import { parseScenarioDrafts, QaParseError } from '../domain/qaParsing';
+import { buildScenarioPrompt, buildStepPrompt, StepScenarioContext } from '../domain/qaPrompts';
+import {
+  parseScenarioDrafts,
+  parseScenarioStepsDrafts,
+  QaParseError,
+} from '../domain/qaParsing';
 import { estimateCostUsd } from '../domain/pricing';
 import { isBudgetExhausted } from '../domain/budget';
 import { generateText, GenerationClient, DocumentBlock } from './generation.service';
@@ -228,6 +232,125 @@ export async function generateScenarios(
         remark: d.remark,
       })),
     });
+    await tx.project.update({
+      where: { id: projectId },
+      data: { spentUsd: { increment: actualCostUsd } },
+    });
+  });
+
+  return getTestRun(executionId, actor);
+}
+
+/**
+ * Generates (or regenerates) the test steps for every confirmed scenario with
+ * Claude, and stores them as TestStep rows. Only allowed while the run is at the
+ * STEPS_DRAFT stage; regenerating replaces the previous draft steps.
+ *
+ * When `feedback` is supplied and steps already exist, the call is a guided
+ * revision: the current steps plus the feedback are fed back to Claude so it
+ * refines them (the review → regenerate → review loop), instead of starting over.
+ * @param feedback - Optional reviewer feedback steering a regeneration.
+ * @param client - Optional injected generation client (used by tests).
+ * @throws {AppError} 404/403/409 per guards, 402 over budget, 502/503 on
+ *   generation failure or unparseable output.
+ */
+export async function generateSteps(
+  executionId: string,
+  actor: Actor,
+  feedback?: string,
+  client?: GenerationClient,
+) {
+  const execution = await loadWritableQaExecution(executionId, actor);
+  if (!execution.testRun) {
+    throw new AppError('No QA run has been started for this phase yet', 409);
+  }
+  const stage = execution.testRun.stage as QaStage;
+  if (stage !== 'STEPS_DRAFT') {
+    throw new AppError(
+      `Steps can only be generated at the STEPS_DRAFT stage (current: ${stage})`,
+      409,
+    );
+  }
+
+  if (isBudgetExhausted(execution.project.spentUsd, execution.project.budgetUsd)) {
+    throw new AppError(
+      `This project has reached its AI budget ($${execution.project.budgetUsd?.toFixed(2)}); ask an admin to raise it`,
+      402,
+    );
+  }
+
+  const runId = execution.testRun.id;
+  // Load the confirmed scenarios with their current steps (steps are only fed
+  // back to the model for a feedback-steered revision).
+  const scenarios = await prisma.testScenario.findMany({
+    where: { runId },
+    orderBy: { no: 'asc' },
+    include: { steps: { orderBy: { order: 'asc' } } },
+  });
+  if (scenarios.length === 0) {
+    throw new AppError('There are no confirmed scenarios to write steps for', 409);
+  }
+
+  const trimmedFeedback = feedback?.trim();
+  const scenarioContexts: StepScenarioContext[] = scenarios.map((s) => ({
+    no: s.no,
+    topic: s.topic,
+    testName: s.testName,
+    ...(s.system ? { system: s.system } : {}),
+    ...(trimmedFeedback && s.steps.length > 0
+      ? { steps: s.steps.map((st) => ({ stepName: st.stepName, expectedResult: st.expectedResult })) }
+      : {}),
+  }));
+
+  const { system, user } = buildStepPrompt({
+    projectName: execution.project.name,
+    description: execution.project.description ?? undefined,
+    input: execution.input ? truncate(execution.input, env.inputMaxChars) : undefined,
+    scenarios: scenarioContexts,
+    feedback: trimmedFeedback ? truncate(trimmedFeedback, env.inputMaxChars) : undefined,
+  });
+
+  const result = await generateText(system, user, client);
+
+  let groups;
+  try {
+    groups = parseScenarioStepsDrafts(result.text);
+  } catch (err) {
+    if (err instanceof QaParseError) {
+      throw new AppError(`AI returned steps that could not be parsed: ${err.message}`, 502);
+    }
+    throw err;
+  }
+
+  // Map each returned group back to a scenario by its `no`; ignore unknown numbers.
+  const scenarioByNo = new Map(scenarios.map((s) => [s.no, s.id]));
+  const newSteps = groups.flatMap((g) => {
+    const scenarioId = scenarioByNo.get(g.no);
+    if (!scenarioId) return [];
+    return g.steps.map((st, i) => ({
+      scenarioId,
+      order: i + 1,
+      stepName: st.stepName,
+      expectedResult: st.expectedResult,
+    }));
+  });
+  if (newSteps.length === 0) {
+    throw new AppError('AI returned no steps matching the existing scenarios', 502);
+  }
+
+  const actualCostUsd = estimateCostUsd(
+    env.anthropicModel,
+    result.inputTokens,
+    result.outputTokens,
+    priceOverrideFromEnv(),
+  );
+
+  const scenarioIds = scenarios.map((s) => s.id);
+  const projectId = execution.project.id;
+  await prisma.$transaction(async (tx) => {
+    // Regeneration replaces all current steps for this run's scenarios.
+    await tx.testStep.deleteMany({ where: { scenarioId: { in: scenarioIds } } });
+    await tx.testStep.createMany({ data: newSteps });
     await tx.project.update({
       where: { id: projectId },
       data: { spentUsd: { increment: actualCostUsd } },

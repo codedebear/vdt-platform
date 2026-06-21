@@ -101,3 +101,64 @@ export function parseScenarioDrafts(text: string): ScenarioDraft[] {
     ...(s.remark ? { remark: s.remark } : {}),
   }));
 }
+
+/** One step of a scenario as drafted by the model. */
+export interface StepDraft {
+  stepName: string;
+  expectedResult: string;
+}
+
+/** The steps the model produced for one scenario, keyed by the scenario's `no`. */
+export interface ScenarioStepsDraft {
+  no: number;
+  steps: StepDraft[];
+}
+
+const stepSchema = z
+  .object({
+    stepName: z.string().trim().min(1, 'stepName is required'),
+    expectedResult: z.string().trim().min(1, 'expectedResult is required'),
+  })
+  .strip();
+
+const scenarioStepsSchema = z
+  .object({
+    no: z.number().int().positive('no must be a positive scenario number'),
+    steps: z.array(stepSchema).min(1, 'each scenario needs at least one step'),
+  })
+  .strip();
+
+const scenarioStepsArraySchema = z.array(scenarioStepsSchema);
+
+/**
+ * Parses and validates the model's step output into {@link ScenarioStepsDraft}s.
+ * The caller maps each `no` back to a scenario.
+ * @throws {QaParseError} if the JSON is malformed, not an array, empty, or any
+ *   element fails validation.
+ */
+export function parseScenarioStepsDrafts(text: string): ScenarioStepsDraft[] {
+  const json = extractJsonArray(text);
+
+  let data: unknown;
+  try {
+    data = JSON.parse(json);
+  } catch (err) {
+    throw new QaParseError(`Model step output was not valid JSON: ${(err as Error).message}`);
+  }
+
+  const result = scenarioStepsArraySchema.safeParse(data);
+  if (!result.success) {
+    const detail = result.error.errors
+      .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
+      .join('; ');
+    throw new QaParseError(`Model step output failed validation: ${detail}`);
+  }
+  if (result.data.length === 0) {
+    throw new QaParseError('Model returned steps for no scenarios');
+  }
+
+  return result.data.map((g) => ({
+    no: g.no,
+    steps: g.steps.map((s) => ({ stepName: s.stepName, expectedResult: s.expectedResult })),
+  }));
+}
