@@ -16,6 +16,7 @@ import {
   advanceStage,
   rollUpScenario,
   rollUpRun,
+  isExecutionComplete,
   ScenarioResult,
   TestStatus,
 } from '../domain/qaExecution';
@@ -146,7 +147,7 @@ export async function heartbeat(runId: string, workerId: string): Promise<{ leas
 /** One step's outcome submitted by the worker. */
 export interface SubmittedResult {
   stepId: string;
-  status: Extract<TestStatus, 'PASS' | 'FAIL'>;
+  status: Extract<TestStatus, 'PASS' | 'FAIL' | 'SKIPPED'>;
   actualResult?: string;
   durationMs?: number;
   evidence?: string; // base64
@@ -224,7 +225,7 @@ export async function submitResults(
   const allStatuses: TestStatus[] = scenarios.flatMap((s) =>
     s.steps.map((st) => (st.result?.status as TestStatus) ?? 'NOT_START'),
   );
-  const finalized = allStatuses.length > 0 && allStatuses.every((s) => s === 'PASS' || s === 'FAIL');
+  const finalized = isExecutionComplete(allStatuses);
 
   if (!finalized) {
     return { runId, finalized: false, stage: run.stage, overallResult: run.overallResult };

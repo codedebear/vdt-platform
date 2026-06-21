@@ -291,11 +291,14 @@ enum QaStage {
 }
 
 /// Per-step execution status — the UATR detail sheet's "Status" column.
+/// SKIPPED marks a step the worker could not run yet (e.g. a BROWSER step before
+/// the Playwright worker exists); terminal but counts as "not verified".
 enum TestStatus {
   NOT_START
   IN_PROGRESS
   PASS
   FAIL
+  SKIPPED
 }
 
 /// Rolled-up result for a scenario or whole run — the UATR summary legend.

@@ -12,7 +12,7 @@ const workerIdSchema = z.object({ workerId: z.string().min(1).max(200) });
 
 const resultSchema = z.object({
   stepId: z.string().min(1),
-  status: z.enum(['PASS', 'FAIL']),
+  status: z.enum(['PASS', 'FAIL', 'SKIPPED']),
   actualResult: z.string().max(20000).optional(),
   durationMs: z.number().int().nonnegative().optional(),
   evidence: z.string().optional(), // base64; size-checked in the service

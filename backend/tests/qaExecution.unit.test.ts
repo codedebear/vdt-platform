@@ -113,6 +113,20 @@ describe('rollUpScenario', () => {
   it('returns PASS only when every step passed', () => {
     expect(rollUpScenario(['PASS', 'PASS'])).toBe('PASS');
   });
+
+  it('treats SKIPPED (no fails) as NOT_COMPLETE', () => {
+    expect(rollUpScenario(['PASS', 'SKIPPED'])).toBe('NOT_COMPLETE');
+    expect(rollUpScenario(['SKIPPED', 'SKIPPED'])).toBe('NOT_COMPLETE');
+  });
+
+  it('lets a real FAIL dominate a SKIPPED', () => {
+    expect(rollUpScenario(['FAIL', 'SKIPPED', 'PASS'])).toBe('FAIL');
+  });
+
+  it('still reports IN_PROGRESS/NOT_COMPLETE over SKIPPED when not all terminal', () => {
+    expect(rollUpScenario(['SKIPPED', 'NOT_START'])).toBe('NOT_COMPLETE');
+    expect(rollUpScenario(['SKIPPED', 'IN_PROGRESS'])).toBe('IN_PROGRESS');
+  });
 });
 
 describe('rollUpRun', () => {

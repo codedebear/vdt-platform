@@ -22,8 +22,10 @@ export type QaStage =
   | 'RESULTS_REVIEW'
   | 'EXPORTED';
 
-/** Per-step execution status (the UATR detail-sheet "Status" column). */
-export type TestStatus = 'NOT_START' | 'IN_PROGRESS' | 'PASS' | 'FAIL';
+/** Per-step execution status (the UATR detail-sheet "Status" column). SKIPPED
+ * marks a step the current worker could not run (e.g. a BROWSER step before the
+ * Playwright worker exists); it is terminal but counts as "not verified". */
+export type TestStatus = 'NOT_START' | 'IN_PROGRESS' | 'PASS' | 'FAIL' | 'SKIPPED';
 
 /**
  * Rolled-up result for a scenario or a whole run — the vocabulary the UATR
@@ -125,7 +127,8 @@ export function reviseStage(current: QaStage, target: QaStage): QaStage {
  *  - no steps, or every step NOT_START  -> NO_RUN
  *  - any step IN_PROGRESS               -> IN_PROGRESS
  *  - some steps finished but some still NOT_START -> NOT_COMPLETE
- *  - all steps finished, any FAIL       -> FAIL
+ *  - all terminal, any FAIL             -> FAIL (a real failure dominates skips)
+ *  - all terminal, no FAIL but any SKIPPED -> NOT_COMPLETE (not fully verified)
  *  - all steps PASS                     -> PASS
  */
 export function rollUpScenario(statuses: readonly TestStatus[]): ScenarioResult {
@@ -138,7 +141,14 @@ export function rollUpScenario(statuses: readonly TestStatus[]): ScenarioResult 
   if (statuses.some((s) => s === 'NOT_START')) {
     return 'NOT_COMPLETE';
   }
-  return statuses.some((s) => s === 'FAIL') ? 'FAIL' : 'PASS';
+  // Every step is now terminal (PASS / FAIL / SKIPPED).
+  if (statuses.some((s) => s === 'FAIL')) {
+    return 'FAIL';
+  }
+  if (statuses.some((s) => s === 'SKIPPED')) {
+    return 'NOT_COMPLETE';
+  }
+  return 'PASS';
 }
 
 /**
@@ -163,7 +173,10 @@ export function rollUpRun(results: readonly ScenarioResult[]): ScenarioResult {
   return results.some((r) => r === 'FAIL') ? 'FAIL' : 'PASS';
 }
 
-/** Whether every step has a terminal (PASS/FAIL) result — i.e. execution done. */
+/** Whether every step has a terminal (PASS/FAIL/SKIPPED) result — execution done. */
 export function isExecutionComplete(statuses: readonly TestStatus[]): boolean {
-  return statuses.length > 0 && statuses.every((s) => s === 'PASS' || s === 'FAIL');
+  return (
+    statuses.length > 0 &&
+    statuses.every((s) => s === 'PASS' || s === 'FAIL' || s === 'SKIPPED')
+  );
 }
