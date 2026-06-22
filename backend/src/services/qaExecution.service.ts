@@ -38,6 +38,8 @@ import { estimateCostUsd } from '../domain/pricing';
 import { isBudgetExhausted } from '../domain/budget';
 import { generateText, GenerationClient, DocumentBlock } from './generation.service';
 import { prepareAttachments } from './attachmentContent.service';
+import { buildUatrWorkbook, UatrWorkbook } from './uatrWorkbook';
+import { UatrRunInput } from '../domain/uatrExport';
 
 /** The authenticated user performing an action. */
 export interface Actor {
@@ -606,6 +608,134 @@ export async function reviseStage(executionId: string, actor: Actor, target: QaS
     data: { stage: nextStage },
   });
   return getTestRun(executionId, actor);
+}
+
+/** Optional UATR Amendment metadata stamped on the run at results sign-off. */
+export interface UatrSignOff {
+  version?: string;
+  preparedBy?: string;
+  reviewedBy?: string;
+  approvedBy?: string;
+}
+
+/**
+ * Confirms the reviewed results and advances the run from RESULTS_REVIEW to
+ * EXPORTED (the formal sign-off; EXPORTED is terminal). Optionally stamps the
+ * UATR Amendment metadata (version / prepared / reviewed / approved by). Spends
+ * **0 tokens** — no Claude call. The actual `.xlsx` is produced on demand by
+ * {@link exportUatr}.
+ * @throws {AppError} 404/403/409 per guards (409 if not at RESULTS_REVIEW).
+ */
+export async function confirmResults(executionId: string, actor: Actor, signOff?: UatrSignOff) {
+  const execution = await loadWritableQaExecution(executionId, actor);
+  if (!execution.testRun) {
+    throw new AppError('No QA run has been started for this phase yet', 409);
+  }
+  const stage = execution.testRun.stage as QaStage;
+  if (stage !== 'RESULTS_REVIEW') {
+    throw new AppError(
+      `Results can only be confirmed at the RESULTS_REVIEW stage (current: ${stage})`,
+      409,
+    );
+  }
+
+  let nextStage: QaStage;
+  try {
+    nextStage = advanceStage(stage, 'CONFIRM_RESULTS');
+  } catch (err) {
+    throw new AppError((err as Error).message, 409);
+  }
+
+  const trimmed = (v: string | undefined) => {
+    const t = v?.trim();
+    return t ? t : undefined;
+  };
+  await prisma.testRun.update({
+    where: { id: execution.testRun.id },
+    data: {
+      stage: nextStage,
+      ...(trimmed(signOff?.version) ? { version: trimmed(signOff?.version) } : {}),
+      ...(signOff && 'preparedBy' in signOff ? { preparedBy: trimmed(signOff.preparedBy) ?? null } : {}),
+      ...(signOff && 'reviewedBy' in signOff ? { reviewedBy: trimmed(signOff.reviewedBy) ?? null } : {}),
+      ...(signOff && 'approvedBy' in signOff ? { approvedBy: trimmed(signOff.approvedBy) ?? null } : {}),
+    },
+  });
+  return getTestRun(executionId, actor);
+}
+
+/**
+ * Builds the UATR `.xlsx` workbook for a run on demand from its stored scenarios,
+ * steps and results. Allowed at RESULTS_REVIEW (preview before sign-off) and
+ * EXPORTED (the signed-off report); the run's results are immutable once
+ * EXPORTED, so the bytes are stable across regenerations. Read-only, no Claude.
+ * @throws {AppError} 404 missing, 409 not a QA phase / run not yet at a stage
+ *   with results, 403 role.
+ */
+export async function exportUatr(executionId: string, actor: Actor): Promise<UatrWorkbook> {
+  const execution = await prisma.phaseExecution.findUnique({
+    where: { id: executionId },
+    include: {
+      project: { select: { name: true } },
+      testRun: {
+        include: {
+          scenarios: {
+            orderBy: { no: 'asc' },
+            include: { steps: { orderBy: { order: 'asc' }, include: { result: true } } },
+          },
+        },
+      },
+    },
+  });
+  if (!execution) {
+    throw new AppError('Phase execution not found', 404);
+  }
+  if ((execution.phaseType as PhaseType) !== 'QA') {
+    throw new AppError('This is not a QA phase execution', 409);
+  }
+  if (!can(actor.role, 'PHASE_SUBMIT', { phaseType: 'QA' })) {
+    throw new AppError('Your role is not allowed to access this QA report', 403);
+  }
+  const run = execution.testRun;
+  if (!run) {
+    throw new AppError('No QA run has been started for this phase yet', 409);
+  }
+  const stage = run.stage as QaStage;
+  if (stage !== 'RESULTS_REVIEW' && stage !== 'EXPORTED') {
+    throw new AppError(
+      `The UATR report is available once the run reaches RESULTS_REVIEW (current: ${stage})`,
+      409,
+    );
+  }
+
+  const runInput: UatrRunInput = {
+    projectName: execution.project.name,
+    version: run.version,
+    preparedBy: run.preparedBy,
+    reviewedBy: run.reviewedBy,
+    approvedBy: run.approvedBy,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    overallResult: run.overallResult,
+    generatedAt: new Date(),
+    scenarios: run.scenarios.map((s) => ({
+      no: s.no,
+      topic: s.topic,
+      testName: s.testName,
+      system: s.system,
+      remark: s.remark,
+      result: s.result,
+      steps: s.steps.map((st) => ({
+        order: st.order,
+        stepName: st.stepName,
+        expectedResult: st.expectedResult,
+        status: st.result?.status ?? 'NOT_START',
+        remark: st.result?.remark,
+        executedAt: st.result?.executedAt,
+      })),
+    })),
+  };
+
+  return buildUatrWorkbook(runInput);
 }
 
 /**

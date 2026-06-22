@@ -24,6 +24,15 @@ const reviseSchema = z.object({
   targetStage: z.enum(['SCENARIO_DRAFT', 'STEPS_DRAFT', 'COMPILED', 'EXECUTING', 'RESULTS_REVIEW']),
 });
 
+// Optional UATR Amendment metadata stamped at results sign-off. All fields
+// optional; bounded to keep cell values sane. An empty body just signs off.
+const signOffSchema = z.object({
+  version: z.string().trim().min(1).max(40).optional(),
+  preparedBy: z.string().trim().max(120).optional(),
+  reviewedBy: z.string().trim().max(120).optional(),
+  approvedBy: z.string().trim().max(120).optional(),
+});
+
 /** GET /api/phases/:executionId/qa — fetch the QA run (scenarios + steps) or null. */
 export async function getTestRun(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -182,6 +191,53 @@ export async function reviseStage(
       next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
       return;
     }
+    next(err);
+  }
+}
+
+/** POST /api/phases/:executionId/qa/results/confirm — sign off results → EXPORTED. */
+export async function confirmResults(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const signOff = signOffSchema.parse(req.body ?? {});
+    const testRun = await qaService.confirmResults(
+      req.params.executionId,
+      { id: req.user.id, role: req.user.role },
+      signOff,
+    );
+    res.status(200).json({ testRun });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
+      return;
+    }
+    next(err);
+  }
+}
+
+/** GET /api/phases/:executionId/qa/export — download the UATR .xlsx (on demand). */
+export async function exportUatr(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const { filename, buffer } = await qaService.exportUatr(req.params.executionId, {
+      id: req.user.id,
+      role: req.user.role,
+    });
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.status(200).send(buffer);
+  } catch (err) {
     next(err);
   }
 }
