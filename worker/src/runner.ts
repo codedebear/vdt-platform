@@ -1,7 +1,7 @@
 /**
  * Executes a single claimed step's artifact and produces a result (QAX-3C).
- * HTTP steps run for real; BROWSER steps are SKIPPED until the Playwright worker
- * (QAX-4). This module performs the only network I/O against the target system.
+ * HTTP steps run for real here; BROWSER steps are handled by browser.ts (QAX-4).
+ * This module performs the HTTP network I/O against the target system.
  */
 import {
   HttpArtifact,
@@ -37,6 +37,8 @@ export interface ExecContext {
   hostAllowlist: string[];
   secrets: Record<string, string>;
   timeoutMs: number;
+  /** Per-action/assertion timeout for BROWSER steps (Playwright). */
+  browserTimeoutMs: number;
   maxEvidenceBytes: number;
 }
 
@@ -66,11 +68,13 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
 
 /** Runs one step and returns its result. Never throws — failures become FAIL. */
 export async function runStep(step: ClaimedStep, ctx: ExecContext): Promise<StepResult> {
+  // BROWSER steps are dispatched to runBrowserStep by index.ts (they need a
+  // Playwright page). Anything else that reaches here is an unknown kind.
   if (step.artifactType !== 'HTTP') {
     return {
       stepId: step.stepId,
       status: 'SKIPPED',
-      remark: `${step.artifactType ?? 'non-HTTP'} steps are not supported by this worker yet (pending QAX-4)`,
+      remark: `${step.artifactType ?? 'non-HTTP'} steps are not supported by this worker`,
     };
   }
 

@@ -11,6 +11,7 @@ export interface WorkerConfig {
   pollMs: number;
   heartbeatMs: number;
   timeoutMs: number;
+  browserTimeoutMs: number;
   maxEvidenceBytes: number;
 }
 

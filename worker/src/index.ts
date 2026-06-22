@@ -1,16 +1,20 @@
 /**
- * VDT QA execution worker (QAX-3C) — entry point.
+ * VDT QA execution worker (QAX-3C / QAX-4) — entry point.
  *
  * Polls the backend for EXECUTING runs, executes each step's compiled artifact
  * against the project's non-prod target, heartbeats to hold the lease, and submits
- * results. Designed to run continuously on a dedicated machine (the spare Windows
- * laptop). HTTP steps run for real; BROWSER steps are SKIPPED until QAX-4.
+ * results. Designed to run continuously on a dedicated machine (a Docker container
+ * on the worker host). HTTP steps run via runStep; BROWSER steps run on a headless
+ * Chromium page — one browser context per scenario, so steps within a scenario
+ * share session state (e.g. login) while scenarios stay isolated.
  *
  * Run with: npm start  (reads config from environment / .env)
  */
 import 'dotenv/config';
+import { chromium, Browser, BrowserContext, Page } from 'playwright';
 import { claim, heartbeat, submit, WorkerConfig, Job } from './api';
 import { runStep, StepResult, ExecContext } from './runner';
+import { runBrowserStep } from './browser';
 
 function loadConfig(): WorkerConfig {
   const apiUrl = process.env.VDT_API_URL;
@@ -27,6 +31,7 @@ function loadConfig(): WorkerConfig {
     // Heartbeat at half the lease so a long run is never reclaimed mid-flight.
     heartbeatMs: Math.max(5000, Math.floor(leaseMs / 2)),
     timeoutMs: Number(process.env.WORKER_HTTP_TIMEOUT_MS ?? 30000),
+    browserTimeoutMs: Number(process.env.WORKER_BROWSER_TIMEOUT_MS ?? 30000),
     maxEvidenceBytes: Number(process.env.WORKER_MAX_EVIDENCE_BYTES ?? 1_500_000),
   };
 }
@@ -42,6 +47,7 @@ async function runJob(cfg: WorkerConfig, job: Job): Promise<void> {
     hostAllowlist: job.hostAllowlist,
     secrets: job.secrets,
     timeoutMs: cfg.timeoutMs,
+    browserTimeoutMs: cfg.browserTimeoutMs,
     maxEvidenceBytes: cfg.maxEvidenceBytes,
   };
 
@@ -50,15 +56,49 @@ async function runJob(cfg: WorkerConfig, job: Job): Promise<void> {
     heartbeat(cfg, job.runId).catch((e) => console.warn(`[job] heartbeat: ${e.message}`));
   }, cfg.heartbeatMs);
 
+  // Lazy browser, with one context per scenario (steps in a scenario share state).
+  let browser: Browser | null = null;
+  let curScenario: number | null = null;
+  let curContext: BrowserContext | null = null;
+  let curPage: Page | null = null;
+
+  const closeScenario = async (): Promise<void> => {
+    if (curContext) {
+      await curContext.close().catch(() => undefined);
+    }
+    curContext = null;
+    curPage = null;
+  };
+
   const results: StepResult[] = [];
   try {
     for (const step of job.steps) {
-      const res = await runStep(step, ctx);
+      let res: StepResult;
+      if (step.artifactType === 'BROWSER') {
+        if (!browser) {
+          browser = await chromium.launch({ headless: true });
+          console.log('[job] launched headless Chromium');
+        }
+        if (curScenario !== step.scenarioNo || !curPage) {
+          await closeScenario();
+          curScenario = step.scenarioNo;
+          curContext = await browser.newContext();
+          curPage = await curContext.newPage();
+          curPage.setDefaultTimeout(cfg.browserTimeoutMs);
+        }
+        res = await runBrowserStep(step, ctx, curPage);
+      } else {
+        res = await runStep(step, ctx);
+      }
       console.log(`  [${res.status}] s${step.scenarioNo}.${step.order} ${step.stepName.slice(0, 60)}`);
       results.push(res);
     }
   } finally {
     clearInterval(beat);
+    await closeScenario();
+    if (browser) {
+      await browser.close().catch(() => undefined);
+    }
   }
 
   const outcome = await submit(cfg, job.runId, results);

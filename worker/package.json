@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "VDT Platform QA execution worker (QAX-3C) — runs compiled HTTP test artifacts against a non-prod target.",
+  "description": "VDT Platform QA execution worker (QAX-3C/QAX-4) \u2014 runs compiled HTTP + browser (Playwright) test artifacts against a non-prod target.",
   "scripts": {
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
-    "test": "node --import tsx --test src/core.test.ts",
+    "test": "node --import tsx --test src/core.test.ts src/browser.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "dotenv": "^16.4.5",
+    "playwright": "1.61.0",
     "tsx": "^4.19.2"
   },
   "devDependencies": {
