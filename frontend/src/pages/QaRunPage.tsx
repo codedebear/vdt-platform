@@ -26,6 +26,7 @@ import {
   TestStatusBadge,
 } from '../components/ui';
 import { EmptyState, ErrorState, LoadingState } from '../components/PageState';
+import QaStageActions from '../components/QaStageActions';
 
 /** Stages at which the UATR report can be downloaded. */
 const EXPORTABLE_STAGES: TestRun['stage'][] = ['RESULTS_REVIEW', 'EXPORTED'];
@@ -72,6 +73,9 @@ export default function QaRunPage() {
   const canWorkQa = Boolean(role && can(role, 'PHASE_SUBMIT', { phaseType: 'QA' }));
   const canExport =
     canWorkQa && testRun != null && EXPORTABLE_STAGES.includes(testRun.stage);
+  // The phase must be in a writable status for the QA run to be mutated.
+  const writable =
+    phase?.status === 'IN_PROGRESS' || phase?.status === 'CHANGES_REQUESTED';
 
   async function handleDownload(): Promise<void> {
     if (!executionId) return;
@@ -111,10 +115,18 @@ export default function QaRunPage() {
             {testRun && <QaStageBadge stage={testRun.stage} />}
           </header>
 
+          <QaStageActions
+            executionId={executionId ?? ''}
+            testRun={testRun}
+            canWork={canWorkQa}
+            writable={writable}
+            onUpdated={setTestRun}
+          />
+
           {!testRun ? (
             <EmptyState
               title="No QA run yet"
-              description="This QA phase has not generated any test scenarios yet. Drafting actions arrive in the next sub-phase."
+              description="No test scenarios have been generated for this QA phase. Generate them above to begin, if you have permission."
             />
           ) : (
             <>
