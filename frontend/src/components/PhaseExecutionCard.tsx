@@ -13,6 +13,7 @@
  * passed in (computed once by the parent); the backend still re-checks each call.
  */
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
 import type { PhaseExecution } from '../lib/types';
 import { formatDateTime } from '../lib/format';
@@ -51,6 +52,9 @@ export default function PhaseExecutionCard({
   const isReviewable = execution.status === 'AWAITING_REVIEW';
   // A batch generation is in flight; the backend poller will resolve it.
   const isQueued = execution.status === 'QUEUED';
+  // QA runs use the staged QA workspace (scenarios -> steps -> execute ->
+  // export), not the single-shot generate/submit flow, so we route into it.
+  const isQa = execution.phaseType === 'QA';
 
   async function run(
     kind: NonNullable<typeof busy>,
@@ -155,8 +159,20 @@ export default function PhaseExecutionCard({
         </div>
       )}
 
-      {/* Worker actions: generate / manual submit */}
-      {isProducible && canWork && (
+      {/* QA staged flow: enter the dedicated workspace instead of generate/submit. */}
+      {isQa && (
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <Link
+            to={`/phases/${execution.id}/qa`}
+            className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-brand-700"
+          >
+            Open QA workspace →
+          </Link>
+        </div>
+      )}
+
+      {/* Worker actions: generate / manual submit (non-QA phases). */}
+      {!isQa && isProducible && canWork && (
         <div className="mt-3 border-t border-slate-100 pt-3">
           {!manualMode ? (
             confirmKind ? (
@@ -315,7 +331,7 @@ export default function PhaseExecutionCard({
           Awaiting review by the project owner.
         </p>
       )}
-      {isProducible && !canWork && (
+      {!isQa && isProducible && !canWork && (
         <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-400">
           Awaiting the {PHASE_LABELS[execution.phaseType]} worker to produce output.
         </p>

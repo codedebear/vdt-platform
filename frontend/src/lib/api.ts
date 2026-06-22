@@ -20,6 +20,8 @@ import type {
   ReviewPhaseInput,
   Role,
   StartPhaseInput,
+  TestRun,
+  UatrSignOffInput,
 } from './types';
 
 /** Base URL for API calls; empty string means same-origin relative paths. */
@@ -197,6 +199,107 @@ export const api = {
     request<void>(`/api/phases/${executionId}/attachments/${attachmentId}`, {
       method: 'DELETE',
     }),
+
+  /* ---- Staged QA execution (QAX-2..5) ------------------------------------ */
+
+  /** Fetch a phase's QA run (scenarios → steps → results), or null if none. */
+  getTestRun: (executionId: string) =>
+    request<{ testRun: TestRun | null }>(`/api/phases/${executionId}/qa`).then(
+      (r) => r.testRun,
+    ),
+
+  /** AI-draft (or feedback-regenerate) the QA scenarios. */
+  generateScenarios: (executionId: string, feedback?: string) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/scenarios/generate`, {
+      method: 'POST',
+      body: feedback ? { feedback } : {},
+    }).then((r) => r.testRun),
+
+  /** Confirm the drafted scenarios → STEPS_DRAFT. */
+  confirmScenarios: (executionId: string) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/scenarios/confirm`, {
+      method: 'POST',
+    }).then((r) => r.testRun),
+
+  /** AI-draft (or feedback-regenerate) the steps for the confirmed scenarios. */
+  generateSteps: (executionId: string, feedback?: string) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/steps/generate`, {
+      method: 'POST',
+      body: feedback ? { feedback } : {},
+    }).then((r) => r.testRun),
+
+  /** Confirm + compile the steps into artifacts → COMPILED. */
+  confirmSteps: (executionId: string) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/steps/confirm`, {
+      method: 'POST',
+    }).then((r) => r.testRun),
+
+  /** Recompile artifacts (optional feedback), staying at COMPILED. */
+  recompileArtifacts: (executionId: string, feedback?: string) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/artifacts/recompile`, {
+      method: 'POST',
+      body: feedback ? { feedback } : {},
+    }).then((r) => r.testRun),
+
+  /** Start executing the compiled run → EXECUTING. */
+  startQaRun: (executionId: string) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/run/start`, {
+      method: 'POST',
+    }).then((r) => r.testRun),
+
+  /** Move the run back to an earlier stage (request changes within the flow). */
+  reviseQaStage: (executionId: string, targetStage: TestRun['stage']) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/revise`, {
+      method: 'POST',
+      body: { targetStage },
+    }).then((r) => r.testRun),
+
+  /** Sign off reviewed results → EXPORTED, optionally stamping Amendment metadata. */
+  confirmResults: (executionId: string, signOff?: UatrSignOffInput) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/results/confirm`, {
+      method: 'POST',
+      body: signOff ?? {},
+    }).then((r) => r.testRun),
+
+  /**
+   * Download the UATR .xlsx for a run. The export is binary, so this bypasses the
+   * JSON `request` helper: it fetches the blob with the auth header and triggers a
+   * browser download from the Content-Disposition filename.
+   */
+  downloadUatr: async (executionId: string): Promise<void> => {
+    const token = getToken();
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/api/phases/${executionId}/qa/export`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+    } catch {
+      throw new ApiError('Network error — could not reach the server', 0);
+    }
+    if (res.status === 401) onUnauthorized();
+    if (!res.ok) {
+      let message = `Export failed (${res.status})`;
+      try {
+        const j = (await res.json()) as { error?: unknown };
+        if (j && j.error) message = String(j.error);
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new ApiError(message, res.status);
+    }
+    const blob = await res.blob();
+    const dispo = res.headers.get('Content-Disposition') ?? '';
+    const match = /filename="([^"]+)"/.exec(dispo);
+    const filename = match ? match[1] : `UATR_${executionId}.xlsx`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
 
   /** List all users (SUPER_ADMIN only). */
   listUsers: () => request<AdminUser[]>('/api/users'),

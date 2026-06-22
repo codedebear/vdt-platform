@@ -150,3 +150,83 @@ export interface ReviewPhaseInput {
   action: ReviewAction;
   note?: string;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Staged QA execution (QAX-2..5)                                              */
+/* -------------------------------------------------------------------------- */
+
+/** The stages a single QA run (TestRun) moves through, in order. */
+export type QaStage =
+  | 'SCENARIO_DRAFT'
+  | 'STEPS_DRAFT'
+  | 'COMPILED'
+  | 'EXECUTING'
+  | 'RESULTS_REVIEW'
+  | 'EXPORTED';
+
+/** Per-step execution status (UATR Detail "Status" column). */
+export type TestStatus = 'NOT_START' | 'IN_PROGRESS' | 'PASS' | 'FAIL' | 'SKIPPED';
+
+/** Rolled-up result for a scenario or whole run (UATR Summary "Result"). */
+export type ScenarioResult = 'PASS' | 'FAIL' | 'IN_PROGRESS' | 'NOT_COMPLETE' | 'NO_RUN';
+
+/** What kind of executable a compiled step produces. */
+export type TestArtifactType = 'HTTP' | 'BROWSER';
+
+/** One executed step's result (evidence bytes are not surfaced to the client). */
+export interface TestResult {
+  id: string;
+  stepId: string;
+  status: TestStatus;
+  actualResult: string | null;
+  evidenceMime: string | null;
+  durationMs: number | null;
+  executedAt: string | null;
+  remark: string | null;
+}
+
+export interface TestStep {
+  id: string;
+  scenarioId: string;
+  order: number;
+  stepName: string;
+  expectedResult: string;
+  artifactType: TestArtifactType | null;
+  artifactSpec: unknown;
+  result: TestResult | null;
+}
+
+export interface TestScenario {
+  id: string;
+  runId: string;
+  no: number;
+  topic: string;
+  testName: string;
+  system: string | null;
+  remark: string | null;
+  result: ScenarioResult | null;
+  steps: TestStep[];
+}
+
+/** A QA run as returned by GET /api/phases/:id/qa (and every QA mutation). */
+export interface TestRun {
+  id: string;
+  executionId: string;
+  stage: QaStage;
+  version: string;
+  preparedBy: string | null;
+  reviewedBy: string | null;
+  approvedBy: string | null;
+  overallResult: ScenarioResult | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  scenarios: TestScenario[];
+}
+
+/** Optional UATR Amendment metadata stamped at results sign-off. */
+export interface UatrSignOffInput {
+  version?: string;
+  preparedBy?: string;
+  reviewedBy?: string;
+  approvedBy?: string;
+}

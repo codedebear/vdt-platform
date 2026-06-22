@@ -13,7 +13,10 @@ import type {
   PhaseStatus,
   PhaseType,
   ProjectStatus,
+  QaStage,
   Role,
+  ScenarioResult,
+  TestStatus,
   Track,
 } from '../lib/types';
 
@@ -189,6 +192,58 @@ export function TrackBadge({ track }: { track: Track }) {
   const styles =
     track === 'FULL_SDLC' ? 'bg-brand-100 text-brand-700' : 'bg-violet-100 text-violet-700';
   return <Badge className={styles}>{track === 'FULL_SDLC' ? 'Full SDLC' : 'QA Only'}</Badge>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* QA flow badges (QAX-6)                                                      */
+/* -------------------------------------------------------------------------- */
+
+export const QA_STAGE_LABELS: Record<QaStage, string> = {
+  SCENARIO_DRAFT: 'Scenario draft',
+  STEPS_DRAFT: 'Steps draft',
+  COMPILED: 'Compiled',
+  EXECUTING: 'Executing',
+  RESULTS_REVIEW: 'Results review',
+  EXPORTED: 'Exported',
+};
+
+const QA_STAGE_STYLES: Record<QaStage, string> = {
+  SCENARIO_DRAFT: 'bg-slate-100 text-slate-600',
+  STEPS_DRAFT: 'bg-slate-100 text-slate-600',
+  COMPILED: 'bg-indigo-100 text-indigo-700',
+  EXECUTING: 'bg-amber-100 text-amber-700',
+  RESULTS_REVIEW: 'bg-blue-100 text-blue-700',
+  EXPORTED: 'bg-emerald-100 text-emerald-700',
+};
+
+export function QaStageBadge({ stage }: { stage: QaStage }) {
+  return <Badge className={QA_STAGE_STYLES[stage]}>{QA_STAGE_LABELS[stage]}</Badge>;
+}
+
+const TEST_STATUS_META: Record<TestStatus, { label: string; styles: string }> = {
+  NOT_START: { label: 'Not Start', styles: 'bg-slate-100 text-slate-500' },
+  IN_PROGRESS: { label: 'In progress', styles: 'bg-amber-100 text-amber-700' },
+  PASS: { label: 'Pass', styles: 'bg-emerald-100 text-emerald-700' },
+  FAIL: { label: 'Fail', styles: 'bg-red-100 text-red-700' },
+  SKIPPED: { label: 'Skipped', styles: 'bg-slate-200 text-slate-600' },
+};
+
+export function TestStatusBadge({ status }: { status: TestStatus }) {
+  const meta = TEST_STATUS_META[status];
+  return <Badge className={meta.styles}>{meta.label}</Badge>;
+}
+
+const SCENARIO_RESULT_META: Record<ScenarioResult, { label: string; styles: string }> = {
+  PASS: { label: 'Pass', styles: 'bg-emerald-100 text-emerald-700' },
+  FAIL: { label: 'Fail', styles: 'bg-red-100 text-red-700' },
+  IN_PROGRESS: { label: 'In progress', styles: 'bg-amber-100 text-amber-700' },
+  NOT_COMPLETE: { label: 'Not Complete', styles: 'bg-orange-100 text-orange-700' },
+  NO_RUN: { label: 'No Run', styles: 'bg-slate-100 text-slate-500' },
+};
+
+export function ScenarioResultBadge({ result }: { result: ScenarioResult | null }) {
+  const meta = SCENARIO_RESULT_META[result ?? 'NO_RUN'];
+  return <Badge className={meta.styles}>{meta.label}</Badge>;
 }
 
 /* -------------------------------------------------------------------------- */

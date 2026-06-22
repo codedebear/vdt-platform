@@ -8,6 +8,7 @@ import RegisterPage from './pages/RegisterPage';
 import ProjectsPage from './pages/ProjectsPage';
 import NewProjectPage from './pages/NewProjectPage';
 import ProjectDetailPage from './pages/ProjectDetailPage';
+import QaRunPage from './pages/QaRunPage';
 import UsersPage from './pages/UsersPage';
 
 export default function App() {
@@ -31,6 +32,7 @@ export default function App() {
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/new" element={<NewProjectPage />} />
           <Route path="/projects/:id" element={<ProjectDetailPage />} />
+          <Route path="/phases/:executionId/qa" element={<QaRunPage />} />
           <Route path="/users" element={<UsersPage />} />
         </Route>
       </Route>
