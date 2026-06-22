@@ -1,22 +1,26 @@
 /**
- * Stage-driven action panel for the QA workspace (QAX-6B — drafting stages).
+ * Stage-driven action panel for the QA workspace (QAX-6B drafting + QAX-6C
+ * results review / sign-off / revise).
  *
  * Renders the actions legal at the run's current stage, each honoring the
  * review → feedback → regenerate loop before the forward confirm:
  *  - SCENARIO_DRAFT → generate scenarios · regenerate (optional feedback) · confirm
  *  - STEPS_DRAFT    → generate steps · regenerate (optional feedback) · confirm+compile
  *  - COMPILED       → recompile (optional feedback) · start run
+ *  - EXECUTING      → passive note (the page auto-refreshes until results land)
+ *  - RESULTS_REVIEW → UATR Amendment sign-off (→ EXPORTED) · revise back to an
+ *                     earlier stage (re-draft / re-run)
+ *  - EXPORTED       → passive note (download the report from the run header)
  *
  * Actions that call Claude (generate / regenerate / compile) are gated behind a
  * one-click cost confirmation, since they spend tokens against the project
- * budget. Confirming scenarios and starting the run cost nothing. The execution
- * / results-review / export stages are handled by QAX-6C; here they render a
- * passive note. Every successful mutation returns the updated run via onUpdated.
+ * budget. Confirming, starting the run, signing off and revising cost nothing.
+ * Every successful mutation returns the updated run via onUpdated.
  */
 import { useState } from 'react';
 import { api, ApiError } from '../lib/api';
-import type { TestRun } from '../lib/types';
-import { Alert, Button, Card, Textarea } from './ui';
+import type { QaStage, TestRun, UatrSignOffInput } from '../lib/types';
+import { Alert, Button, Card, Field, Input, QA_STAGE_LABELS, Select, Textarea } from './ui';
 
 interface QaStageActionsProps {
   executionId: string;
@@ -37,6 +41,13 @@ interface PendingAction {
   run: () => Promise<TestRun>;
 }
 
+/** Earlier stages a RESULTS_REVIEW run can be sent back to (re-draft / re-run). */
+const REVISE_TARGETS: { value: QaStage; label: string }[] = [
+  { value: 'COMPILED', label: 'Re-run (back to Compiled)' },
+  { value: 'STEPS_DRAFT', label: 'Revise steps' },
+  { value: 'SCENARIO_DRAFT', label: 'Revise scenarios' },
+];
+
 export default function QaStageActions({
   executionId,
   testRun,
@@ -48,17 +59,15 @@ export default function QaStageActions({
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState('');
   const [pending, setPending] = useState<PendingAction | null>(null);
+  // RESULTS_REVIEW sign-off + revise state.
+  const [signOff, setSignOff] = useState<UatrSignOffInput>({});
+  const [reviseTarget, setReviseTarget] = useState<QaStage>('COMPILED');
 
   if (!canWork) return null;
 
-  const stage = testRun?.stage ?? 'SCENARIO_DRAFT';
+  const stage: QaStage = testRun?.stage ?? 'SCENARIO_DRAFT';
   const hasScenarios = (testRun?.scenarios.length ?? 0) > 0;
   const hasSteps = Boolean(testRun?.scenarios.some((s) => s.steps.length > 0));
-
-  // Drafting actions only apply while the phase is writable and the run is at a
-  // pre-execution stage; later stages are read-only here (QAX-6C owns them).
-  const draftingStage =
-    stage === 'SCENARIO_DRAFT' || stage === 'STEPS_DRAFT' || stage === 'COMPILED';
 
   async function execute(action: () => Promise<TestRun>): Promise<void> {
     setBusy(true);
@@ -97,18 +106,6 @@ export default function QaStageActions({
     );
   }
 
-  if (!draftingStage) {
-    return (
-      <Card className="mb-6 p-4">
-        <p className="text-sm text-slate-500">
-          {stage === 'EXECUTING'
-            ? 'Execution is in progress — results will appear once the worker finishes.'
-            : 'Results review and export are managed below.'}
-        </p>
-      </Card>
-    );
-  }
-
   // Cost-confirmation takes over the panel until the user confirms or cancels.
   if (pending) {
     return (
@@ -127,6 +124,16 @@ export default function QaStageActions({
         </div>
       </Card>
     );
+  }
+
+  /** Build a sign-off payload from the non-empty form fields. */
+  function trimmedSignOff(): UatrSignOffInput {
+    const out: UatrSignOffInput = {};
+    if (signOff.version?.trim()) out.version = signOff.version.trim();
+    if (signOff.preparedBy?.trim()) out.preparedBy = signOff.preparedBy.trim();
+    if (signOff.reviewedBy?.trim()) out.reviewedBy = signOff.reviewedBy.trim();
+    if (signOff.approvedBy?.trim()) out.approvedBy = signOff.approvedBy.trim();
+    return out;
   }
 
   return (
@@ -261,6 +268,96 @@ export default function QaStageActions({
             </Button>
           </div>
         </div>
+      )}
+
+      {/* EXECUTING ----------------------------------------------------------- */}
+      {stage === 'EXECUTING' && (
+        <p className="text-sm text-slate-500">
+          Execution is in progress — the worker is running the compiled artifacts. This
+          page refreshes automatically and the results will appear once it finishes.
+        </p>
+      )}
+
+      {/* RESULTS_REVIEW ------------------------------------------------------ */}
+      {stage === 'RESULTS_REVIEW' && (
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600">
+            Review the per-step results below. Sign off to finalize the run and produce the
+            UATR report, or send it back to re-draft or re-run.
+          </p>
+
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field label="Version">
+              <Input
+                value={signOff.version ?? ''}
+                placeholder="e.g. 1.0"
+                onChange={(e) => setSignOff((s) => ({ ...s, version: e.target.value }))}
+              />
+            </Field>
+            <Field label="Prepared by">
+              <Input
+                value={signOff.preparedBy ?? ''}
+                onChange={(e) => setSignOff((s) => ({ ...s, preparedBy: e.target.value }))}
+              />
+            </Field>
+            <Field label="Reviewed by">
+              <Input
+                value={signOff.reviewedBy ?? ''}
+                onChange={(e) => setSignOff((s) => ({ ...s, reviewedBy: e.target.value }))}
+              />
+            </Field>
+            <Field label="Approved by">
+              <Input
+                value={signOff.approvedBy ?? ''}
+                onChange={(e) => setSignOff((s) => ({ ...s, approvedBy: e.target.value }))}
+              />
+            </Field>
+          </div>
+
+          <div className="flex flex-wrap items-end gap-2">
+            <Button
+              variant="primary"
+              loading={busy}
+              onClick={() => void execute(() => api.confirmResults(executionId, trimmedSignOff()))}
+            >
+              Sign off &amp; export →
+            </Button>
+          </div>
+
+          <div className="border-t border-slate-100 pt-3">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+              Send back
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                className="max-w-xs"
+                value={reviseTarget}
+                onChange={(e) => setReviseTarget(e.target.value as QaStage)}
+              >
+                {REVISE_TARGETS.map((t) => (
+                  <option key={t.value} value={t.value}>
+                    {t.label}
+                  </option>
+                ))}
+              </Select>
+              <Button
+                variant="secondary"
+                disabled={busy}
+                onClick={() => void execute(() => api.reviseQaStage(executionId, reviseTarget))}
+              >
+                Revise
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXPORTED ------------------------------------------------------------ */}
+      {stage === 'EXPORTED' && (
+        <p className="text-sm text-slate-500">
+          This run is signed off ({QA_STAGE_LABELS.EXPORTED}). Download the UATR report from
+          the run header above.
+        </p>
       )}
     </Card>
   );

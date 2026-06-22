@@ -1,14 +1,12 @@
 /**
- * QA workspace (QAX-6A — read view).
+ * QA workspace (QAX-6).
  *
- * Shows a QA phase's staged run: the current stage, run metadata (version,
- * prepared/reviewed/approved, overall result), and the scenarios → steps →
- * results tables read-only. A "Download UATR" button (visible to QA-capable
- * roles) is enabled once the run reaches RESULTS_REVIEW or EXPORTED.
- *
- * The interactive stage actions (generate / confirm / compile / start /
- * results sign-off, with the review→feedback→regen loops) arrive in QAX-6B/6C;
- * this sub-phase establishes the data shape, navigation and the export download.
+ * Shows a QA phase's staged run: the current stage, run metadata, the
+ * scenarios → steps → results tables, and a "Download UATR" button (QA-capable
+ * roles, enabled at RESULTS_REVIEW/EXPORTED). The stage-appropriate actions —
+ * generate/confirm/compile/start, the review→feedback→regen loops, results
+ * sign-off and revise — live in {@link QaStageActions}. While the run is
+ * EXECUTING the page polls for results so they appear without a manual refresh.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
@@ -68,6 +66,22 @@ export default function QaRunPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // While the run is EXECUTING, poll for results so the page reflects the
+  // worker's progress without a manual refresh. The interval is torn down as
+  // soon as the stage changes (e.g. to RESULTS_REVIEW) or the page unmounts.
+  useEffect(() => {
+    if (testRun?.stage !== 'EXECUTING' || !executionId) return;
+    const id = setInterval(() => {
+      api
+        .getTestRun(executionId)
+        .then((run) => run && setTestRun(run))
+        .catch(() => {
+          /* transient poll error — keep the last good state */
+        });
+    }, 5000);
+    return () => clearInterval(id);
+  }, [testRun?.stage, executionId]);
 
   const role = user?.role;
   const canWorkQa = Boolean(role && can(role, 'PHASE_SUBMIT', { phaseType: 'QA' }));
@@ -221,6 +235,7 @@ function ScenarioCard({ scenario }: { scenario: TestScenario }) {
                 <th className="py-2 pr-3 font-medium">Expected</th>
                 <th className="py-2 pr-3 font-medium">Type</th>
                 <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 pr-3 font-medium">Actual result</th>
               </tr>
             </thead>
             <tbody>
@@ -232,6 +247,16 @@ function ScenarioCard({ scenario }: { scenario: TestScenario }) {
                   <td className="py-2 pr-3 text-xs text-slate-500">{step.artifactType ?? '—'}</td>
                   <td className="py-2 pr-3">
                     <TestStatusBadge status={step.result?.status ?? 'NOT_START'} />
+                  </td>
+                  <td className="py-2 pr-3 text-xs text-slate-500">
+                    {step.result?.actualResult ? (
+                      <span className="break-words">{step.result.actualResult}</span>
+                    ) : (
+                      '—'
+                    )}
+                    {step.result?.durationMs != null && (
+                      <span className="ml-1 text-slate-400">({step.result.durationMs} ms)</span>
+                    )}
                   </td>
                 </tr>
               ))}
