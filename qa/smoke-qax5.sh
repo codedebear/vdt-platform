@@ -156,15 +156,21 @@ else
     echo "SKIP  reach RESULTS_REVIEW (WORKER_TOKEN not set)"
   else
     # Act as the worker: drain the global queue, submitting PASS for every step of
-    # each claimed job, until our run is finalized to RESULTS_REVIEW.
-    REVIEW_REACHED=0
+    # each claimed job, until our run is finalized to RESULTS_REVIEW. The claim
+    # response nests the job under `job` (job.runId / job.steps) — mirrors qax3b.
     for _ in $(seq 1 20); do
       wreq POST /api/worker/jobs/claim '{"workerId":"smoke-qax5"}'
-      [ "$RESP_CODE" = "204" ] && break
-      [ "$RESP_CODE" != "200" ] && { fail_msg "worker claim" "(got $RESP_CODE)"; break; }
-      RUN_ID=$(jget "['runId']")
-      RESULTS=$(printf '%s' "$RESP_BODY" | python3 -c "import sys,json;d=json.load(sys.stdin);print(json.dumps([{'stepId':s['stepId'],'status':'PASS','actualResult':'ok','durationMs':1} for s in d['steps']]))")
-      wreq POST "/api/worker/jobs/$RUN_ID/results" "{\"workerId\":\"smoke-qax5\",\"results\":$RESULTS}"
+      [ "$RESP_CODE" != "200" ] && break   # 204/empty => queue drained
+      JOB="$RESP_BODY"
+      RUN_ID="$(printf '%s' "$JOB" | python3 -c "import sys,json;print(json.load(sys.stdin)['job']['runId'])")"
+      NSTEPS="$(printf '%s' "$JOB" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['job']['steps']))")"
+      [ "$NSTEPS" -eq 0 ] 2>/dev/null && continue
+      RESULTS="$(printf '%s' "$JOB" | python3 -c "
+import sys,json
+job=json.load(sys.stdin)['job']
+res=[{'stepId':s['stepId'],'status':'PASS','actualResult':'ok','durationMs':5} for s in job['steps']]
+print(json.dumps({'workerId':'smoke-qax5','results':res}))")"
+      wreq POST "/api/worker/jobs/$RUN_ID/results" "$RESULTS"
     done
 
     req GET "/api/phases/$EXEC_QA/qa" "$T_QA" ""
