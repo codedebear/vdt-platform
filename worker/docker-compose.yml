@@ -1,0 +1,21 @@
+# QAX-4B — run the VDT QA worker in an isolated container on the worker host
+# (e.g. this MacBook Pro). Start it only when you want to run tests:
+#
+#   docker compose up --build      # start (Ctrl-C to stop), or add -d for background
+#   docker compose down            # stop and remove the container
+#
+# Isolation: there is NO `volumes:` section, so the container cannot see or modify
+# any file on the host — it only has its own image filesystem. It connects out to
+# the backend and the test target while running, and nothing persists on the host
+# when it is stopped.
+services:
+  worker:
+    build: .
+    image: vdt-qa-worker:latest
+    env_file: .env
+    # Chromium needs far more shared memory than Docker's 64MB default.
+    shm_size: "1gb"
+    # Forward signals properly so Ctrl-C / `down` shuts the worker down gracefully.
+    init: true
+    # On-demand only — never auto-restart.
+    restart: "no"
