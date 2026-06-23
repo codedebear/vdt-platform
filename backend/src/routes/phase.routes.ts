@@ -29,6 +29,7 @@ import {
   startRun,
   confirmResults,
   exportUatr,
+  exportUatrPdf,
 } from '../controllers/qaExecution.controller';
 
 export const phaseRouter = Router();
@@ -75,3 +76,5 @@ phaseRouter.post('/:executionId/qa/run/start', startRun);
 // results, so the download is available at RESULTS_REVIEW and EXPORTED.
 phaseRouter.post('/:executionId/qa/results/confirm', confirmResults);
 phaseRouter.get('/:executionId/qa/export', exportUatr);
+// QAX-7C: PDF "Test Result Report" — full UATR info + per-step evidence inline.
+phaseRouter.get('/:executionId/qa/report.pdf', exportUatrPdf);

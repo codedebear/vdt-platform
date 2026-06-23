@@ -39,6 +39,7 @@ import { isBudgetExhausted } from '../domain/budget';
 import { generateText, GenerationClient, DocumentBlock } from './generation.service';
 import { prepareAttachments } from './attachmentContent.service';
 import { buildUatrWorkbook, UatrWorkbook } from './uatrWorkbook';
+import { buildUatrPdf, PdfStepEvidence } from './uatrPdf';
 import { UatrRunInput } from '../domain/uatrExport';
 
 /** The authenticated user performing an action. */
@@ -786,6 +787,128 @@ export async function exportUatr(executionId: string, actor: Actor): Promise<Uat
   };
 
   return buildUatrWorkbook(runInput);
+}
+
+/** Renders an HTTP artifact's request (method/path/headers/body) as plain text. */
+function httpRequestText(spec: unknown): string | null {
+  if (!spec || typeof spec !== 'object') {
+    return null;
+  }
+  const s = spec as {
+    kind?: string;
+    request?: {
+      method?: string;
+      path?: string;
+      headers?: Record<string, string>;
+      query?: Record<string, string>;
+      body?: unknown;
+    };
+  };
+  if (s.kind !== 'HTTP' || !s.request) {
+    return null;
+  }
+  const r = s.request;
+  const lines: string[] = [`${r.method ?? 'GET'} ${r.path ?? ''}`];
+  if (r.query) {
+    lines.push(`?${new URLSearchParams(r.query).toString()}`);
+  }
+  if (r.headers) {
+    for (const [k, v] of Object.entries(r.headers)) {
+      lines.push(`${k}: ${v}`);
+    }
+  }
+  if (r.body !== undefined) {
+    lines.push('', typeof r.body === 'string' ? r.body : JSON.stringify(r.body, null, 2));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Builds the on-demand UATR PDF "Test Result Report" for a QA run — the single
+ * sign-off deliverable carrying the full UATR info plus each step's evidence
+ * (BROWSER screenshot / HTTP request+response) inline. Same loader and guards as
+ * {@link exportUatr}; allowed once the run reaches RESULTS_REVIEW (and EXPORTED).
+ */
+export async function exportUatrPdf(
+  executionId: string,
+  actor: Actor,
+): Promise<{ filename: string; buffer: Buffer }> {
+  const execution = await prisma.phaseExecution.findUnique({
+    where: { id: executionId },
+    include: {
+      project: { select: { name: true } },
+      testRun: {
+        include: {
+          scenarios: {
+            orderBy: { no: 'asc' },
+            include: { steps: { orderBy: { order: 'asc' }, include: { result: true } } },
+          },
+        },
+      },
+    },
+  });
+  if (!execution) {
+    throw new AppError('Phase execution not found', 404);
+  }
+  if ((execution.phaseType as PhaseType) !== 'QA') {
+    throw new AppError('This is not a QA phase execution', 409);
+  }
+  if (!can(actor.role, 'PHASE_SUBMIT', { phaseType: 'QA' })) {
+    throw new AppError('Your role is not allowed to access this QA report', 403);
+  }
+  const run = execution.testRun;
+  if (!run) {
+    throw new AppError('No QA run has been started for this phase yet', 409);
+  }
+  const stage = run.stage as QaStage;
+  if (stage !== 'RESULTS_REVIEW' && stage !== 'EXPORTED') {
+    throw new AppError(
+      `The report is available once the run reaches RESULTS_REVIEW (current: ${stage})`,
+      409,
+    );
+  }
+
+  const runInput: UatrRunInput = {
+    projectName: execution.project.name,
+    version: run.version,
+    preparedBy: run.preparedBy,
+    reviewedBy: run.reviewedBy,
+    approvedBy: run.approvedBy,
+    startedAt: run.startedAt,
+    finishedAt: run.finishedAt,
+    overallResult: run.overallResult,
+    generatedAt: new Date(),
+    scenarios: run.scenarios.map((s) => ({
+      no: s.no,
+      topic: s.topic,
+      testName: s.testName,
+      system: s.system,
+      remark: s.remark,
+      result: s.result,
+      steps: s.steps.map((st) => ({
+        order: st.order,
+        stepName: st.stepName,
+        expectedResult: st.expectedResult,
+        status: st.result?.status ?? 'NOT_START',
+        remark: st.result?.remark,
+        executedAt: st.result?.executedAt,
+      })),
+    })),
+  };
+
+  const evidenceByStep = new Map<string, PdfStepEvidence>();
+  for (const s of run.scenarios) {
+    for (const st of s.steps) {
+      evidenceByStep.set(`${s.no}.${st.order}`, {
+        artifactType: (st.artifactType as 'HTTP' | 'BROWSER' | null) ?? null,
+        evidence: st.result?.evidence ? Buffer.from(st.result.evidence) : null,
+        evidenceMime: st.result?.evidenceMime ?? null,
+        httpRequestText: httpRequestText(st.artifactSpec),
+      });
+    }
+  }
+
+  return buildUatrPdf(runInput, evidenceByStep);
 }
 
 /**

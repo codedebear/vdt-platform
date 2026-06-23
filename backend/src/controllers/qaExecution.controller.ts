@@ -267,6 +267,27 @@ export async function exportUatr(req: Request, res: Response, next: NextFunction
   }
 }
 
+/**
+ * GET /api/phases/:executionId/qa/report.pdf — stream the UATR PDF "Test Result
+ * Report" (full UATR info + per-step evidence) for review & sign-off.
+ */
+export async function exportUatrPdf(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const { filename, buffer } = await qaService.exportUatrPdf(req.params.executionId, {
+      id: req.user.id,
+      role: req.user.role,
+    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.status(200).send(buffer);
+  } catch (err) {
+    next(err);
+  }
+}
+
 /** POST /api/phases/:executionId/qa/scenarios/confirm — confirm scenarios → STEPS_DRAFT. */
 export async function confirmScenarios(
   req: Request,
