@@ -19,6 +19,7 @@ import {
 } from '../controllers/attachment.controller';
 import {
   getTestRun,
+  getStepEvidence,
   generateScenarios,
   confirmScenarios,
   generateSteps,
@@ -59,6 +60,9 @@ phaseRouter.delete('/:executionId/attachments/:attachmentId', deleteAttachment);
 // is rate-limited per user; QA-phase / worker-role / status / budget rules live
 // in the service layer.
 phaseRouter.get('/:executionId/qa', getTestRun);
+// Stream a single step's stored evidence (screenshot / HTTP capture) — fetched
+// lazily by the UI; the run payload from GET /qa omits the evidence bytes.
+phaseRouter.get('/:executionId/qa/steps/:stepId/evidence', getStepEvidence);
 phaseRouter.post('/:executionId/qa/scenarios/generate', generateRateLimiter, generateScenarios);
 phaseRouter.post('/:executionId/qa/scenarios/confirm', confirmScenarios);
 phaseRouter.post('/:executionId/qa/steps/generate', generateRateLimiter, generateSteps);

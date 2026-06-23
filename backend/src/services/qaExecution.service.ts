@@ -112,10 +112,60 @@ export async function getTestRun(executionId: string, _actor: Actor) {
     include: {
       scenarios: {
         orderBy: { no: 'asc' },
-        include: { steps: { orderBy: { order: 'asc' }, include: { result: true } } },
+        include: {
+          steps: {
+            orderBy: { order: 'asc' },
+            // Exclude the `evidence` bytes here — they can be large (screenshots)
+            // and are fetched lazily via GET .../qa/steps/:stepId/evidence. Keep
+            // evidenceMime so the UI knows evidence exists and its kind.
+            include: {
+              result: {
+                select: {
+                  id: true,
+                  stepId: true,
+                  status: true,
+                  actualResult: true,
+                  evidenceMime: true,
+                  durationMs: true,
+                  executedAt: true,
+                  remark: true,
+                },
+              },
+            },
+          },
+        },
       },
     },
   });
+}
+
+/**
+ * Returns the stored evidence (a BROWSER step's screenshot, or an HTTP step's
+ * captured request/response text) for one step's result, to stream to the client.
+ * Verifies the step belongs to the given execution's run before returning, so a
+ * stepId from another run cannot be read through this execution. 404 if the step,
+ * its result, or the evidence is missing. Read-only; the route requires auth (the
+ * same gate as getTestRun) — there is no per-step authorization beyond that.
+ */
+export async function getStepEvidence(
+  executionId: string,
+  stepId: string,
+  _actor: Actor,
+): Promise<{ evidence: Buffer; evidenceMime: string }> {
+  const step = await prisma.testStep.findFirst({
+    where: { id: stepId, scenario: { run: { executionId } } },
+    select: { result: { select: { evidence: true, evidenceMime: true } } },
+  });
+  if (!step) {
+    throw new AppError('Step not found', 404);
+  }
+  if (!step.result || !step.result.evidence) {
+    throw new AppError('No evidence stored for this step', 404);
+  }
+  return {
+    evidence: Buffer.from(step.result.evidence),
+    evidenceMime: step.result.evidenceMime ?? 'application/octet-stream',
+  };
 }
 
 /**

@@ -49,6 +49,31 @@ export async function getTestRun(req: Request, res: Response, next: NextFunction
   }
 }
 
+/**
+ * GET /api/phases/:executionId/qa/steps/:stepId/evidence — stream one step's
+ * stored evidence (a BROWSER screenshot or an HTTP capture) inline, with its
+ * stored MIME type. 404 if the step (within this run) has no evidence.
+ */
+export async function getStepEvidence(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const { evidence, evidenceMime } = await qaService.getStepEvidence(
+      req.params.executionId,
+      req.params.stepId,
+      { id: req.user.id, role: req.user.role },
+    );
+    res.setHeader('Content-Type', evidenceMime);
+    res.setHeader('Content-Disposition', 'inline');
+    // Evidence may contain sensitive response data — never cache it in shared caches.
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.status(200).send(evidence);
+  } catch (err) {
+    next(err);
+  }
+}
+
 /** POST /api/phases/:executionId/qa/scenarios/generate — AI-draft scenarios. */
 export async function generateScenarios(
   req: Request,
