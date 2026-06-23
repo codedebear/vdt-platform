@@ -96,12 +96,16 @@ function drawTable(
 
   drawRow(headers, true);
   rows.forEach((r) => drawRow(r, false));
+  // Cells are drawn at explicit x positions, which leaves doc.x at the last
+  // column. Reset it so following text flows full-width from the left margin.
+  doc.x = startX;
   doc.font('Helvetica').fillColor(COLORS.text);
 }
 
 /** Section heading. */
 function heading(doc: PDFKit.PDFDocument, text: string, size = 12): void {
   ensureSpace(doc, size + 14);
+  doc.x = doc.page.margins.left;
   doc.moveDown(0.6);
   doc.font('Helvetica-Bold').fontSize(size).fillColor(COLORS.text).text(text);
   doc.font('Helvetica').fillColor(COLORS.text).fontSize(9);
@@ -201,6 +205,7 @@ export function buildUatrPdf(
   heading(doc, 'Detail Test Scenario Summary');
   for (const scenario of run.scenarios) {
     ensureSpace(doc, 40);
+    doc.x = doc.page.margins.left;
     doc
       .font('Helvetica-Bold')
       .fontSize(10)
@@ -219,6 +224,7 @@ export function buildUatrPdf(
 
     for (const step of scenario.steps) {
       ensureSpace(doc, 50);
+      doc.x = doc.page.margins.left;
       doc
         .font('Helvetica-Bold')
         .fontSize(9)
