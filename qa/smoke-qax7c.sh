@@ -77,6 +77,7 @@ for _ in $(seq 1 30); do curl -sf "$BASE/health" >/dev/null 2>&1 && { echo " rea
 echo
 
 register owner@codedebear.com "Owner One"
+register ba@codedebear.com    "Business Analyst"
 register qa@codedebear.com    "QA Engineer"
 if [ "$SEED_MODE" = "docker" ]; then
   ( cd "$REPO_DIR" && docker compose exec -T "$COMPOSE_SVC" \
@@ -90,16 +91,17 @@ fi
 echo
 
 T_OWNER=$(login owner@codedebear.com)
+T_BA=$(login ba@codedebear.com)
 T_QA=$(login qa@codedebear.com)
-for t in "$T_OWNER" "$T_QA"; do [ -z "$t" ] && { echo "login failed"; exit 1; }; done
+for t in "$T_OWNER" "$T_BA" "$T_QA"; do [ -z "$t" ] && { echo "login failed"; exit 1; }; done
 
 req POST /api/projects "$T_OWNER" '{"name":"QAX7C Smoke","description":"pdf report smoke","track":"QA_ONLY"}'
 check "owner creates QA_ONLY project" 201 "$RESP_CODE"
 PID=$(jget "['id']")
 
-req POST "/api/projects/$PID/phases" "$T_QA" '{"phaseType":"PLANNER","input":"scope"}'
+req POST "/api/projects/$PID/phases" "$T_BA" '{"phaseType":"PLANNER","input":"scope"}'
 EXEC_PLAN=$(jget "['id']")
-req POST "/api/phases/$EXEC_PLAN/output" "$T_QA" '{"output":"Test Scope: orders API."}'
+req POST "/api/phases/$EXEC_PLAN/output" "$T_BA" '{"output":"Test Scope: orders API."}'
 req POST "/api/phases/$EXEC_PLAN/review" "$T_OWNER" '{"action":"APPROVE"}'
 req POST "/api/projects/$PID/phases" "$T_QA" '{"phaseType":"QA","input":"GET /api/orders returns a list."}'
 EXEC_QA=$(jget "['id']")

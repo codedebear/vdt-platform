@@ -31,6 +31,11 @@ export interface PdfStepEvidence {
   httpRequestText?: string | null;
 }
 
+/** pdfkit exposes openImage() at runtime but @types/pdfkit omits it — narrow it. */
+interface OpenableDoc {
+  openImage(src: Buffer): { width: number; height: number };
+}
+
 /** A built report ready to stream to the client. */
 export interface UatrPdf {
   filename: string;
@@ -120,7 +125,7 @@ function renderEvidence(doc: PDFKit.PDFDocument, ev: PdfStepEvidence | undefined
     doc.font('Helvetica-Bold').fontSize(8).fillColor(COLORS.muted).text('Screenshot:');
     doc.moveDown(0.1);
     try {
-      const img = doc.openImage(ev.evidence);
+      const img = (doc as unknown as OpenableDoc).openImage(ev.evidence);
       const scale = Math.min(cw / img.width, 320 / img.height, 2);
       const w = img.width * scale;
       const h = img.height * scale;
