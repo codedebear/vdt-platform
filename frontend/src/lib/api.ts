@@ -111,6 +111,42 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   return payload as T;
 }
 
+/** Streams an authenticated binary endpoint to a browser download (blob + <a>). */
+async function downloadBlobFile(path: string, fallbackName: string): Promise<void> {
+  const token = getToken();
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+  } catch {
+    throw new ApiError('Network error — could not reach the server', 0);
+  }
+  if (res.status === 401) onUnauthorized();
+  if (!res.ok) {
+    let message = `Download failed (${res.status})`;
+    try {
+      const j = (await res.json()) as { error?: unknown };
+      if (j && j.error) message = String(j.error);
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(message, res.status);
+  }
+  const blob = await res.blob();
+  const dispo = res.headers.get('Content-Disposition') ?? '';
+  const match = /filename="([^"]+)"/.exec(dispo);
+  const filename = match ? match[1] : fallbackName;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** Typed endpoint wrappers. */
 export const api = {
   login: (email: string, password: string) =>
@@ -334,6 +370,10 @@ export const api = {
     a.remove();
     URL.revokeObjectURL(url);
   },
+
+  /** Downloads the UATR PDF "Test Result Report" (full info + per-step evidence). */
+  downloadUatrReport: (executionId: string): Promise<void> =>
+    downloadBlobFile(`/api/phases/${executionId}/qa/report.pdf`, `UATR_${executionId}.pdf`),
 
   /** List all users (SUPER_ADMIN only). */
   listUsers: () => request<AdminUser[]>('/api/users'),

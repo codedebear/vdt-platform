@@ -2,7 +2,7 @@
  * QA workspace (QAX-6).
  *
  * Shows a QA phase's staged run: the current stage, run metadata, the
- * scenarios → steps → results tables, and a "Download UATR" button (QA-capable
+ * scenarios → steps → results tables, and a "Download report (PDF)" button (QA-capable
  * roles, enabled at RESULTS_REVIEW/EXPORTED). The stage-appropriate actions —
  * generate/confirm/compile/start, the review→feedback→regen loops, results
  * sign-off and revise — live in {@link QaStageActions}. While the run is
@@ -102,7 +102,7 @@ export default function QaRunPage() {
     setDownloading(true);
     setDownloadError(null);
     try {
-      await api.downloadUatr(executionId);
+      await api.downloadUatrReport(executionId);
     } catch (err) {
       setDownloadError(err instanceof ApiError ? err.message : 'Download failed');
     } finally {
@@ -182,7 +182,7 @@ export default function QaRunPage() {
                   </dl>
                   {canExport && (
                     <Button variant="secondary" loading={downloading} onClick={handleDownload}>
-                      Download UATR
+                      Download report (PDF)
                     </Button>
                   )}
                 </div>
