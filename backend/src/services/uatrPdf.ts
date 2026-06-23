@@ -162,6 +162,42 @@ function renderEvidence(doc: PDFKit.PDFDocument, ev: PdfStepEvidence | undefined
 }
 
 /**
+ * One sign-off line: role label, the typed name on a signature line (or a blank
+ * line to sign by hand), plus a date line — with vertical room to actually sign.
+ */
+function signatureBlock(doc: PDFKit.PDFDocument, role: string, name?: string | null): void {
+  const left = doc.page.margins.left;
+  const sigWidth = 260;
+  const dateX = left + sigWidth + 40;
+  const dateWidth = 150;
+  ensureSpace(doc, 56);
+
+  doc.moveDown(1.1);
+  doc.x = left;
+  doc.font('Helvetica-Bold').fontSize(9).fillColor(COLORS.head).text(role);
+
+  // Leave a gap above the line so there is space to sign.
+  const lineY = doc.y + 22;
+  doc.lineWidth(0.6).moveTo(left, lineY).lineTo(left + sigWidth, lineY).stroke(COLORS.border);
+  doc.lineWidth(0.6).moveTo(dateX, lineY).lineTo(dateX + dateWidth, lineY).stroke(COLORS.border);
+
+  // Printed name on the signature line (if the run was signed off).
+  if (name && name.trim()) {
+    doc.font('Helvetica').fontSize(10).fillColor(COLORS.text).text(name.trim(), left + 4, lineY - 13, {
+      width: sigWidth - 8,
+    });
+  }
+
+  // Captions under each line.
+  doc.font('Helvetica').fontSize(7.5).fillColor(COLORS.muted);
+  doc.text('Signature / Name', left, lineY + 3, { width: sigWidth });
+  doc.text('Date', dateX, lineY + 3, { width: dateWidth });
+  doc.y = lineY + 16;
+  doc.x = left;
+  doc.fillColor(COLORS.text);
+}
+
+/**
  * Builds the UATR PDF report. `evidenceByStep` maps `${scenarioNo}.${stepOrder}`
  * to that step's captured evidence (screenshot / HTTP request+response).
  */
@@ -188,9 +224,14 @@ export function buildUatrPdf(
   field(doc, 'Started', formatDate(run.startedAt));
   field(doc, 'Finished', formatDate(run.finishedAt));
   field(doc, 'Overall result', summaryResultLabel(run.overallResult));
-  field(doc, 'Prepared by', run.preparedBy ?? '');
-  field(doc, 'Reviewed by', run.reviewedBy ?? '');
-  field(doc, 'Approved by', run.approvedBy ?? '');
+
+  // Sign-off: a proper signature block per role — printed name (if signed off)
+  // sitting on a signature line, with a date line, and room to sign by hand.
+  doc.moveDown(0.8);
+  doc.font('Helvetica-Bold').fontSize(11).fillColor(COLORS.text).text('Sign-off');
+  signatureBlock(doc, 'Prepared by', run.preparedBy);
+  signatureBlock(doc, 'Reviewed by', run.reviewedBy);
+  signatureBlock(doc, 'Approved by', run.approvedBy);
 
   // Test Scenario Summary (the Excel-style overview table).
   heading(doc, 'Test Scenario Summary');
