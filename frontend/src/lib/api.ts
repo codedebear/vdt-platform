@@ -266,6 +266,40 @@ export const api = {
    * JSON `request` helper: it fetches the blob with the auth header and triggers a
    * browser download from the Content-Disposition filename.
    */
+  /**
+   * Fetches a step's stored evidence (a BROWSER screenshot or an HTTP capture) as
+   * a blob + MIME. Auth is sent via the Authorization header (an <img src> can't),
+   * so callers build an object URL for images or read .text() for HTTP captures.
+   */
+  getStepEvidence: async (
+    executionId: string,
+    stepId: string,
+  ): Promise<{ blob: Blob; mime: string }> => {
+    const token = getToken();
+    let res: Response;
+    try {
+      res = await fetch(`${API_BASE}/api/phases/${executionId}/qa/steps/${stepId}/evidence`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+    } catch {
+      throw new ApiError('Network error — could not reach the server', 0);
+    }
+    if (res.status === 401) onUnauthorized();
+    if (!res.ok) {
+      let message = `Could not load evidence (${res.status})`;
+      try {
+        const j = (await res.json()) as { error?: unknown };
+        if (j && j.error) message = String(j.error);
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new ApiError(message, res.status);
+    }
+    const blob = await res.blob();
+    const mime = res.headers.get('Content-Type') ?? blob.type ?? 'application/octet-stream';
+    return { blob, mime };
+  },
+
   downloadUatr: async (executionId: string): Promise<void> => {
     const token = getToken();
     let res: Response;

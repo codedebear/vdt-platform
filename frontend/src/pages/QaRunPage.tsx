@@ -11,7 +11,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
-import type { PhaseExecution, TestRun, TestScenario } from '../lib/types';
+import type {
+  HttpArtifactRequest,
+  PhaseExecution,
+  TestRun,
+  TestScenario,
+  TestStep,
+} from '../lib/types';
 import { formatDateTime } from '../lib/format';
 import { can } from '../lib/permissions';
 import { useAuth } from '../auth/AuthContext';
@@ -195,7 +201,7 @@ export default function QaRunPage() {
               ) : (
                 <div className="space-y-4">
                   {testRun.scenarios.map((scenario) => (
-                    <ScenarioCard key={scenario.id} scenario={scenario} />
+                    <ScenarioCard key={scenario.id} scenario={scenario} executionId={executionId ?? ''} />
                   ))}
                 </div>
               )}
@@ -208,7 +214,13 @@ export default function QaRunPage() {
 }
 
 /** One scenario block: header + a read-only steps/results table. */
-function ScenarioCard({ scenario }: { scenario: TestScenario }) {
+function ScenarioCard({
+  scenario,
+  executionId,
+}: {
+  scenario: TestScenario;
+  executionId: string;
+}) {
   return (
     <Card className="p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -236,6 +248,7 @@ function ScenarioCard({ scenario }: { scenario: TestScenario }) {
                 <th className="py-2 pr-3 font-medium">Type</th>
                 <th className="py-2 pr-3 font-medium">Status</th>
                 <th className="py-2 pr-3 font-medium">Actual result</th>
+                <th className="py-2 pr-3 font-medium">Evidence</th>
               </tr>
             </thead>
             <tbody>
@@ -258,6 +271,9 @@ function ScenarioCard({ scenario }: { scenario: TestScenario }) {
                       <span className="ml-1 text-slate-400">({step.result.durationMs} ms)</span>
                     )}
                   </td>
+                  <td className="py-2 pr-3">
+                    <StepEvidence executionId={executionId} step={step} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -265,5 +281,147 @@ function ScenarioCard({ scenario }: { scenario: TestScenario }) {
         </div>
       )}
     </Card>
+  );
+}
+
+
+/**
+ * Evidence cell for one step: a lazily-loaded screenshot thumbnail (BROWSER,
+ * click to enlarge) or an expandable Request/Response panel (HTTP). Auth is sent
+ * via the API client, so images are fetched as a blob and shown via an object URL
+ * (revoked on unmount). Renders "—" when the step has no result/evidence yet.
+ */
+function StepEvidence({ executionId, step }: { executionId: string; step: TestStep }) {
+  const result = step.result;
+  const mime = result?.evidenceMime ?? null;
+  const isImage = !!mime && mime.startsWith('image/');
+  const isHttp = step.artifactType === 'HTTP';
+
+  const [imgUrl, setImgUrl] = useState<string | null>(null);
+  const [enlarged, setEnlarged] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [respText, setRespText] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Load the screenshot once, when image evidence exists for this step.
+  useEffect(() => {
+    if (!isImage) return;
+    let active = true;
+    let made: string | null = null;
+    api
+      .getStepEvidence(executionId, step.id)
+      .then(({ blob }) => {
+        if (!active) return;
+        made = URL.createObjectURL(blob);
+        setImgUrl(made);
+      })
+      .catch((e: unknown) => {
+        if (active) setErr(e instanceof Error ? e.message : 'load failed');
+      });
+    return () => {
+      active = false;
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [executionId, step.id, isImage]);
+
+  if (!result) return <span className="text-slate-300">—</span>;
+
+  if (isImage) {
+    return (
+      <>
+        {imgUrl ? (
+          <button type="button" onClick={() => setEnlarged(true)} className="block">
+            <img
+              src={imgUrl}
+              alt="step screenshot"
+              className="h-16 w-auto rounded border border-slate-200 hover:opacity-80"
+            />
+          </button>
+        ) : err ? (
+          <span className="text-xs text-rose-400">{err}</span>
+        ) : (
+          <span className="text-xs text-slate-300">loading…</span>
+        )}
+        {enlarged && imgUrl && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+            onClick={() => setEnlarged(false)}
+            role="presentation"
+          >
+            <img
+              src={imgUrl}
+              alt="step screenshot"
+              className="max-h-full max-w-full rounded shadow-lg"
+            />
+          </div>
+        )}
+      </>
+    );
+  }
+
+  if (isHttp) {
+    const req = (step.artifactSpec as { request?: HttpArtifactRequest } | null)?.request;
+    const reqText = req
+      ? [
+          `${req.method} ${req.path}`,
+          req.query ? `?${new URLSearchParams(req.query).toString()}` : '',
+          ...(req.headers ? Object.entries(req.headers).map(([k, v]) => `${k}: ${v}`) : []),
+          req.body !== undefined
+            ? `\n${typeof req.body === 'string' ? req.body : JSON.stringify(req.body, null, 2)}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '(no request spec)';
+
+    const toggle = () => {
+      const next = !open;
+      setOpen(next);
+      if (next && respText === null && mime) {
+        api
+          .getStepEvidence(executionId, step.id)
+          .then(({ blob }) => blob.text())
+          .then((t) => setRespText(t))
+          .catch((e: unknown) => setErr(e instanceof Error ? e.message : 'load failed'));
+      }
+    };
+
+    return (
+      <div className="text-xs">
+        <button type="button" onClick={toggle} className="text-indigo-600 hover:underline">
+          {open ? 'Hide request/response' : 'Request / Response'}
+        </button>
+        {open && (
+          <div className="mt-1 space-y-2">
+            <div>
+              <div className="font-medium text-slate-500">Request</div>
+              <pre className="overflow-x-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">
+                {reqText}
+              </pre>
+            </div>
+            <div>
+              <div className="font-medium text-slate-500">Response</div>
+              {respText !== null ? (
+                <pre className="overflow-x-auto rounded bg-slate-50 p-2 text-[11px] text-slate-700">
+                  {respText}
+                </pre>
+              ) : err ? (
+                <span className="text-rose-400">{err}</span>
+              ) : mime ? (
+                <span className="text-slate-300">loading…</span>
+              ) : (
+                <span className="text-slate-300">no capture</span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return mime ? (
+    <span className="text-xs text-slate-400">{mime}</span>
+  ) : (
+    <span className="text-slate-300">—</span>
   );
 }

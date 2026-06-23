@@ -173,6 +173,15 @@ export type ScenarioResult = 'PASS' | 'FAIL' | 'IN_PROGRESS' | 'NOT_COMPLETE' | 
 /** What kind of executable a compiled step produces. */
 export type TestArtifactType = 'HTTP' | 'BROWSER';
 
+/** The request half of a compiled HTTP artifact — shown in the QA evidence panel. */
+export interface HttpArtifactRequest {
+  method: string;
+  path: string;
+  headers?: Record<string, string>;
+  query?: Record<string, string>;
+  body?: unknown;
+}
+
 /** One executed step's result (evidence bytes are not surfaced to the client). */
 export interface TestResult {
   id: string;
