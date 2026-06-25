@@ -180,3 +180,103 @@ export function isExecutionComplete(statuses: readonly TestStatus[]): boolean {
     statuses.every((s) => s === 'PASS' || s === 'FAIL' || s === 'SKIPPED')
   );
 }
+
+/* ------------------------------------------------------------------ *
+ * Full Retest (QAX-8): clone an already-compiled run into a fresh run *
+ * ------------------------------------------------------------------ */
+
+/** A source step as read from a completed run, for retest cloning. */
+export interface RetestSourceStep {
+  order: number;
+  stepName: string;
+  expectedResult: string;
+  artifactType: TestArtifactType | null;
+  /** The compiled artifact (Prisma Json). `null` means the step was never compiled. */
+  artifactSpec: unknown;
+}
+
+/** A source scenario as read from a completed run, for retest cloning. */
+export interface RetestSourceScenario {
+  no: number;
+  topic: string;
+  testName: string;
+  system: string | null;
+  remark: string | null;
+  steps: RetestSourceStep[];
+}
+
+/** A cloned step ready to be created on the new run (ids/results dropped). */
+export interface RetestClonedStep {
+  order: number;
+  stepName: string;
+  expectedResult: string;
+  artifactType: TestArtifactType | null;
+  artifactSpec: unknown;
+}
+
+/** A cloned scenario ready to be created on the new run (ids/results dropped). */
+export interface RetestClonedScenario {
+  no: number;
+  topic: string;
+  testName: string;
+  system: string | null;
+  remark: string | null;
+  steps: RetestClonedStep[];
+}
+
+/** Outcome of planning a retest clone from a source run's scenarios. */
+export interface RetestPlan {
+  /** Cloned scenarios (sorted by `no`, each scenario's steps sorted by `order`). */
+  scenarios: RetestClonedScenario[];
+  /** Total number of steps across all cloned scenarios. */
+  totalSteps: number;
+  /** Steps whose `artifactSpec` is null (never compiled) — a retest blocker. */
+  uncompiledSteps: number;
+}
+
+/**
+ * Pure planner for a "Full Retest": maps a completed run's scenarios and steps
+ * into the data needed to create a brand-new run, **dropping all ids and prior
+ * results while preserving every compiled `artifactSpec`**. The new run is meant
+ * to land at the COMPILED stage so it can be re-executed with **0 Claude tokens**
+ * (the compiled artifacts are replayed as-is). Scenarios are sorted by `no` and
+ * each scenario's steps by `order` so the clone is deterministic.
+ *
+ * The returned counts let the caller reject a retest that has nothing to run
+ * (`totalSteps === 0`) or that was never fully compiled (`uncompiledSteps > 0`).
+ * This function performs no IO and is independently unit-tested.
+ */
+export function planRetestClone(scenarios: readonly RetestSourceScenario[]): RetestPlan {
+  let totalSteps = 0;
+  let uncompiledSteps = 0;
+
+  const cloned: RetestClonedScenario[] = [...scenarios]
+    .sort((a, b) => a.no - b.no)
+    .map((s) => {
+      const steps: RetestClonedStep[] = [...s.steps]
+        .sort((a, b) => a.order - b.order)
+        .map((st) => {
+          totalSteps += 1;
+          if (st.artifactSpec == null) {
+            uncompiledSteps += 1;
+          }
+          return {
+            order: st.order,
+            stepName: st.stepName,
+            expectedResult: st.expectedResult,
+            artifactType: st.artifactType,
+            artifactSpec: st.artifactSpec,
+          };
+        });
+      return {
+        no: s.no,
+        topic: s.topic,
+        testName: s.testName,
+        system: s.system,
+        remark: s.remark,
+        steps,
+      };
+    });
+
+  return { scenarios: cloned, totalSteps, uncompiledSteps };
+}

@@ -307,3 +307,27 @@ export async function confirmScenarios(
     next(err);
   }
 }
+
+/**
+ * POST /api/phases/:executionId/qa/retest — start a Full Retest by cloning this
+ * signed-off (EXPORTED) run's compiled artifacts into a new QA run at COMPILED.
+ * Responds with the newly-created run (its `executionId` lets the UI navigate).
+ */
+export async function retestRun(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const testRun = await qaService.retestRun(req.params.executionId, {
+      id: req.user.id,
+      role: req.user.role,
+    });
+    res.status(201).json({ testRun });
+  } catch (err) {
+    next(err);
+  }
+}

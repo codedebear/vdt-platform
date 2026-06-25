@@ -27,6 +27,7 @@ import {
   recompileArtifacts,
   reviseStage,
   startRun,
+  retestRun,
   confirmResults,
   exportUatr,
   exportUatrPdf,
@@ -71,6 +72,7 @@ phaseRouter.post('/:executionId/qa/steps/confirm', generateRateLimiter, confirmS
 phaseRouter.post('/:executionId/qa/artifacts/recompile', generateRateLimiter, recompileArtifacts);
 phaseRouter.post('/:executionId/qa/revise', reviseStage);
 phaseRouter.post('/:executionId/qa/run/start', startRun);
+phaseRouter.post('/:executionId/qa/retest', generateRateLimiter, retestRun);
 // QAX-5: results sign-off (RESULTS_REVIEW → EXPORTED) + UATR .xlsx download.
 // Both are free (no API tokens); the report is generated on demand from stored
 // results, so the download is available at RESULTS_REVIEW and EXPORTED.

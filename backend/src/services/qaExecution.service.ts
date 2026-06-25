@@ -19,8 +19,20 @@ import { env } from '../config/env';
 import { prisma } from '../config/prisma';
 import { AppError } from '../middleware/errorHandler';
 import { can, Role } from '../domain/permissions';
-import { PhaseType } from '../domain/workflow';
-import { QaStage, advanceStage, reviseStage as reviseStageRule } from '../domain/qaExecution';
+import {
+  PhaseType,
+  Track,
+  canStartPhase,
+  nextRunNumber,
+  toExecutionSummaries,
+} from '../domain/workflow';
+import {
+  QaStage,
+  TestArtifactType,
+  advanceStage,
+  reviseStage as reviseStageRule,
+  planRetestClone,
+} from '../domain/qaExecution';
 import {
   buildScenarioPrompt,
   buildStepPrompt,
@@ -942,4 +954,158 @@ export async function confirmScenarios(executionId: string, actor: Actor) {
     data: { stage: nextStage },
   });
   return getTestRun(executionId, actor);
+}
+
+/**
+ * Starts a **Full Retest**: clones a completed (EXPORTED) QA run into a brand-new
+ * QA `PhaseExecution`, landing the new run at the COMPILED stage so the operator
+ * can re-execute the exact same compiled artifacts against freshly-fixed code with
+ * **0 Claude tokens** (no re-generation, no re-compilation). The previous run is
+ * kept intact as a separate execution row — full QA history is preserved and the
+ * UATR "Run No" increments naturally.
+ *
+ * Because nothing else closes a QA round, this finalizes the signed-off source
+ * execution (APPROVED + completedAt) inside the same transaction; otherwise the
+ * still-open source would block starting a new QA run (see workflow.canStartPhase).
+ * The caller then drives the new run with the normal `startRun` action.
+ *
+ * @throws {AppError} 403 if the role may not run QA; 404 if the source is missing;
+ *   409 if the source is not a QA phase / has no run / is not EXPORTED / has no
+ *   steps / has uncompiled steps / a new run cannot be started.
+ */
+export async function retestRun(sourceExecutionId: string, actor: Actor) {
+  if (!can(actor.role, 'PHASE_SUBMIT', { phaseType: 'QA' })) {
+    throw new AppError('Your role is not allowed to run a QA phase', 403);
+  }
+
+  const source = await prisma.phaseExecution.findUnique({
+    where: { id: sourceExecutionId },
+    include: {
+      testRun: {
+        include: {
+          scenarios: {
+            orderBy: { no: 'asc' },
+            include: {
+              steps: {
+                orderBy: { order: 'asc' },
+                select: {
+                  order: true,
+                  stepName: true,
+                  expectedResult: true,
+                  artifactType: true,
+                  artifactSpec: true,
+                },
+              },
+            },
+          },
+        },
+      },
+      project: { select: { id: true, track: true } },
+    },
+  });
+  if (!source) {
+    throw new AppError('Phase execution not found', 404);
+  }
+  if ((source.phaseType as PhaseType) !== 'QA') {
+    throw new AppError('This is not a QA phase execution', 409);
+  }
+  if (!source.testRun) {
+    throw new AppError('This QA phase has no run to retest', 409);
+  }
+  if ((source.testRun.stage as QaStage) !== 'EXPORTED') {
+    throw new AppError(
+      `Only a signed-off (EXPORTED) run can be retested (current: ${source.testRun.stage})`,
+      409,
+    );
+  }
+
+  const plan = planRetestClone(
+    source.testRun.scenarios.map((s) => ({
+      no: s.no,
+      topic: s.topic,
+      testName: s.testName,
+      system: s.system,
+      remark: s.remark,
+      steps: s.steps.map((st) => ({
+        order: st.order,
+        stepName: st.stepName,
+        expectedResult: st.expectedResult,
+        artifactType: st.artifactType as TestArtifactType | null,
+        artifactSpec: st.artifactSpec,
+      })),
+    })),
+  );
+  if (plan.totalSteps === 0) {
+    throw new AppError('There is nothing to retest (the source run has no steps)', 409);
+  }
+  if (plan.uncompiledSteps > 0) {
+    throw new AppError('The source run has uncompiled steps; it cannot be retested', 409);
+  }
+
+  const projectId = source.project.id;
+  const track = source.project.track as Track;
+
+  let newExecutionId: string;
+  try {
+    newExecutionId = await prisma.$transaction(async (tx) => {
+      // Finalize the signed-off source round so a new QA run is allowed to start.
+      const openStatuses = ['IN_PROGRESS', 'CHANGES_REQUESTED', 'AWAITING_REVIEW', 'QUEUED'];
+      if (openStatuses.includes(source.status)) {
+        await tx.phaseExecution.update({
+          where: { id: source.id },
+          data: { status: 'APPROVED', completedAt: new Date() },
+        });
+      }
+
+      const execs = await tx.phaseExecution.findMany({
+        where: { projectId },
+        select: { phaseType: true, status: true, runNumber: true },
+      });
+      const summaries = toExecutionSummaries(execs);
+      const decision = canStartPhase(track, 'QA', summaries);
+      if (!decision.allowed) {
+        throw new AppError(decision.reason ?? 'A retest run cannot be started', 409);
+      }
+
+      const created = await tx.phaseExecution.create({
+        data: {
+          projectId,
+          phaseType: 'QA',
+          runNumber: nextRunNumber(summaries, 'QA'),
+          status: 'IN_PROGRESS',
+          testRun: {
+            create: {
+              stage: 'COMPILED',
+              scenarios: {
+                create: plan.scenarios.map((s) => ({
+                  no: s.no,
+                  topic: s.topic,
+                  testName: s.testName,
+                  system: s.system,
+                  remark: s.remark,
+                  steps: {
+                    create: s.steps.map((st) => ({
+                      order: st.order,
+                      stepName: st.stepName,
+                      expectedResult: st.expectedResult,
+                      artifactType: st.artifactType,
+                      artifactSpec: st.artifactSpec as Prisma.InputJsonValue,
+                    })),
+                  },
+                })),
+              },
+            },
+          },
+        },
+      });
+      return created.id;
+    });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      throw new AppError('A concurrent QA run was just created; please retry', 409);
+    }
+    throw err;
+  }
+
+  return getTestRun(newExecutionId, actor);
 }
