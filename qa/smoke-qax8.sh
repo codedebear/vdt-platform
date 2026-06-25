@@ -197,6 +197,8 @@ else
   check "  round2 same scenario count" "$SRC_NSCEN" "$(jget "['"'"'testRun'"'"']['"'"'scenarios'"'"'].__len__()")"
   req GET "/api/phases/$EXEC_QA" "$T_QA" ""
   check "  source(round1) finalized -> APPROVED" "APPROVED" "$(jget "['"'"'status'"'"']")"
+  req GET "/api/phases/$EXEC_QA/qa" "$T_QA" ""
+  check "  source(round1) run normalized -> EXPORTED" "EXPORTED" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
 
   echo
   echo "-- round 2 -> EXPORTED, retest from EXPORTED --"

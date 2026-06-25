@@ -960,8 +960,8 @@ export async function confirmScenarios(executionId: string, actor: Actor) {
  * Starts a **Full Retest**: clones a reviewed (RESULTS_REVIEW) or signed-off (EXPORTED) QA run into a brand-new
  * QA `PhaseExecution`, landing the new run at the COMPILED stage so the operator
  * can re-execute the exact same compiled artifacts against freshly-fixed code with
- * **0 Claude tokens** (no re-generation, no re-compilation). The previous run is
- * kept intact as a separate execution row — full QA history is preserved and the
+ * **0 Claude tokens** (no re-generation, no re-compilation). A source run still at RESULTS_REVIEW is advanced to EXPORTED (closed without
+ * sign-off names). The previous run is kept intact as a separate execution row — full QA history is preserved and the
  * UATR "Run No" increments naturally.
  *
  * Because nothing else closes a QA round, this finalizes the source
@@ -1045,6 +1045,7 @@ export async function retestRun(sourceExecutionId: string, actor: Actor) {
 
   const projectId = source.project.id;
   const track = source.project.track as Track;
+  const sourceRunId = source.testRun.id;
 
   let newExecutionId: string;
   try {
@@ -1055,6 +1056,15 @@ export async function retestRun(sourceExecutionId: string, actor: Actor) {
         await tx.phaseExecution.update({
           where: { id: source.id },
           data: { status: 'APPROVED', completedAt: new Date() },
+        });
+      }
+      // Normalize a not-yet-signed-off source run up to EXPORTED so the closed
+      // round reads consistently in history (no sign-off names are stamped — the
+      // operator chose to retest instead of formally signing off).
+      if (srcStage === 'RESULTS_REVIEW') {
+        await tx.testRun.update({
+          where: { id: sourceRunId },
+          data: { stage: advanceStage('RESULTS_REVIEW', 'CONFIRM_RESULTS') },
         });
       }
 
