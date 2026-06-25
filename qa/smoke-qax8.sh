@@ -83,25 +83,37 @@ check() {
 pass_msg() { printf 'PASS  %-52s\n' "$1"; PASS=$((PASS + 1)); }
 fail_msg() { printf 'FAIL  %-52s %s\n' "$1" "${2:-}"; FAIL=$((FAIL + 1)); }
 
-# Drain the global worker queue, submitting PASS for every step (0 Claude tokens).
-drain_worker() {
-  for _ in $(seq 1 20); do
-    wreq POST /api/worker/jobs/claim '"'"'{"workerId":"smoke-qax8"}'"'"'
-    [ "$RESP_CODE" != "200" ] && break
-    local JOB="$RESP_BODY"
-    local RUN_ID NSTEPS RESULTS
-    RUN_ID="$(printf '"'"'%s'"'"' "$JOB" | python3 -c "import sys,json;print(json.load(sys.stdin)['"'"'job'"'"']['"'"'runId'"'"'])")"
-    NSTEPS="$(printf '"'"'%s'"'"' "$JOB" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['"'"'job'"'"']['"'"'steps'"'"']))")"
-    [ "$NSTEPS" -eq 0 ] 2>/dev/null && continue
-    RESULTS="$(printf '"'"'%s'"'"' "$JOB" | PNG="$PNG_B64" python3 -c "
+# Wait until <executionId>'s run leaves EXECUTING. Acts as a worker (claim+submit
+# PASS, 0 Claude tokens) whenever a job is available, and otherwise polls — so it
+# works whether the smoke is the only worker OR a real worker (Mac Docker) is also
+# draining the global queue. Args: <executionId> <userToken>.
+drain_until_done() {
+  local execId=$1 token=$2 i st
+  for i in $(seq 1 40); do
+    wreq POST /api/worker/jobs/claim '{"workerId":"smoke-qax8"}'
+    if [ "$RESP_CODE" = "200" ]; then
+      local JOB="$RESP_BODY" RUN_ID NSTEPS RESULTS
+      RUN_ID="$(printf '%s' "$JOB" | python3 -c "import sys,json;print(json.load(sys.stdin)['job']['runId'])")"
+      NSTEPS="$(printf '%s' "$JOB" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['job']['steps']))")"
+      if [ "$NSTEPS" -gt 0 ] 2>/dev/null; then
+        RESULTS="$(printf '%s' "$JOB" | PNG="$PNG_B64" python3 -c "
 import sys,json,os
-job=json.load(sys.stdin)['"'"'job'"'"']
-png=os.environ['"'"'PNG'"'"']
-res=[{'"'"'stepId'"'"':s['"'"'stepId'"'"'],'"'"'status'"'"':'"'"'PASS'"'"','"'"'actualResult'"'"':'"'"'ok'"'"','"'"'durationMs'"'"':5,
-      '"'"'evidence'"'"':png,'"'"'evidenceMime'"'"':'"'"'image/png'"'"'} for s in job['"'"'steps'"'"']]
-print(json.dumps({'"'"'workerId'"'"':'"'"'smoke-qax8'"'"','"'"'results'"'"':res}))")"
-    wreq POST "/api/worker/jobs/$RUN_ID/results" "$RESULTS"
+job=json.load(sys.stdin)['job']
+png=os.environ['PNG']
+res=[{'stepId':s['stepId'],'status':'PASS','actualResult':'ok','durationMs':5,
+      'evidence':png,'evidenceMime':'image/png'} for s in job['steps']]
+print(json.dumps({'workerId':'smoke-qax8','results':res}))")"
+        wreq POST "/api/worker/jobs/$RUN_ID/results" "$RESULTS"
+      fi
+      continue
+    fi
+    # Nothing to claim right now — maybe a real worker holds it. Poll our run.
+    req GET "/api/phases/$execId/qa" "$token" ""
+    st="$(jget "['testRun']['stage']")"
+    [ -n "$st" ] && [ "$st" != "EXECUTING" ] && return 0
+    sleep 3
   done
+  return 0
 }
 
 # Assert the run returned in RESP_BODY is a fresh COMPILED clone (no results).
@@ -206,7 +218,7 @@ else
     pass_msg "compile reached COMPILED"
     req POST "/api/phases/$EXEC_QA/qa/run/start" "$T_QA" ""
     check "round1 startRun -> EXECUTING" "EXECUTING" "$(jget "['testRun']['stage']")"
-    drain_worker
+    drain_until_done "$EXEC_QA" "$T_QA"
     req GET "/api/phases/$EXEC_QA/qa" "$T_QA" ""
     check "round1 reached RESULTS_REVIEW" "RESULTS_REVIEW" "$(jget "['testRun']['stage']")"
     SRC_NSCEN="$(jget "['testRun']['scenarios'].__len__()")"
@@ -234,7 +246,7 @@ else
         echo "-- round 2 -> EXPORTED, retest from EXPORTED --"
         req POST "/api/phases/$EXEC_R2/qa/run/start" "$T_QA" ""
         check "round2 startRun -> EXECUTING" "EXECUTING" "$(jget "['testRun']['stage']")"
-        drain_worker
+        drain_until_done "$EXEC_R2" "$T_QA"
         req GET "/api/phases/$EXEC_R2/qa" "$T_QA" ""
         check "round2 reached RESULTS_REVIEW" "RESULTS_REVIEW" "$(jget "['testRun']['stage']")"
         if [ "$(jget "['testRun']['stage']")" = "RESULTS_REVIEW" ]; then
