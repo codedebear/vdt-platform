@@ -283,6 +283,16 @@ export const api = {
       method: 'POST',
     }).then((r) => r.testRun),
 
+  /**
+   * Start a Full Retest: clone this reviewed/signed-off run's compiled test
+   * cases into a brand-new QA run (lands at COMPILED, 0 Claude tokens). Returns
+   * the new run; the caller navigates to its executionId.
+   */
+  retestQaRun: (executionId: string) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/retest`, {
+      method: 'POST',
+    }).then((r) => r.testRun),
+
   /** Move the run back to an earlier stage (request changes within the flow). */
   reviseQaStage: (executionId: string, targetStage: TestRun['stage']) =>
     request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/revise`, {

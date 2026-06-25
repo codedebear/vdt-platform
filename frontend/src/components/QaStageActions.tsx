@@ -18,6 +18,7 @@
  * Every successful mutation returns the updated run via onUpdated.
  */
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
 import type { QaStage, TestRun, UatrSignOffInput } from '../lib/types';
 import { Alert, Button, Card, Field, Input, QA_STAGE_LABELS, Select, Textarea } from './ui';
@@ -62,6 +63,9 @@ export default function QaStageActions({
   // RESULTS_REVIEW sign-off + revise state.
   const [signOff, setSignOff] = useState<UatrSignOffInput>({});
   const [reviseTarget, setReviseTarget] = useState<QaStage>('COMPILED');
+  // Full retest (QAX-8B) confirmation.
+  const [retestConfirm, setRetestConfirm] = useState(false);
+  const navigate = useNavigate();
 
   if (!canWork) return null;
 
@@ -94,6 +98,26 @@ export default function QaStageActions({
     });
   }
 
+  /**
+   * Start a Full Retest: clone the current run into a fresh COMPILED run and
+   * navigate to it. Costs no tokens; finalizes the current round as history.
+   */
+  async function handleRetest(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const run = await api.retestQaRun(executionId);
+      setRetestConfirm(false);
+      navigate(`/phases/${run.executionId}/qa`);
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : 'Could not start a retest, please try again',
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const trimmedFeedback = feedback.trim() || undefined;
 
   if (!writable) {
@@ -119,6 +143,35 @@ export default function QaStageActions({
             Confirm
           </Button>
           <Button variant="ghost" disabled={busy} onClick={() => setPending(null)}>
+            Cancel
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  // Full-retest confirmation takes over the panel until confirmed or cancelled.
+  if (retestConfirm) {
+    return (
+      <Card className="mb-6 space-y-3 p-4">
+        <p className="text-sm text-slate-600">
+          Start a <strong>Full retest</strong>? This clones the same compiled test cases into a
+          brand-new run (it starts at Compiled, ready to run) and closes the current run as
+          completed history. It does not call Claude.
+        </p>
+        {error && <Alert>{error}</Alert>}
+        <div className="flex flex-wrap gap-2">
+          <Button variant="primary" loading={busy} onClick={() => void handleRetest()}>
+            Start retest
+          </Button>
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => {
+              setRetestConfirm(false);
+              setError(null);
+            }}
+          >
             Cancel
           </Button>
         </div>
@@ -322,6 +375,9 @@ export default function QaStageActions({
             >
               Sign off &amp; export →
             </Button>
+            <Button variant="secondary" disabled={busy} onClick={() => setRetestConfirm(true)}>
+              Full retest
+            </Button>
           </div>
 
           <div className="border-t border-slate-100 pt-3">
@@ -354,10 +410,16 @@ export default function QaStageActions({
 
       {/* EXPORTED ------------------------------------------------------------ */}
       {stage === 'EXPORTED' && (
-        <p className="text-sm text-slate-500">
-          This run is signed off ({QA_STAGE_LABELS.EXPORTED}). Download the UATR report from
-          the run header above.
-        </p>
+        <div className="space-y-3">
+          <p className="text-sm text-slate-500">
+            This run is signed off ({QA_STAGE_LABELS.EXPORTED}). Download the UATR report from
+            the run header above, or start a full retest after a fix to re-run the same test
+            cases against the new build.
+          </p>
+          <Button variant="secondary" disabled={busy} onClick={() => setRetestConfirm(true)}>
+            Full retest
+          </Button>
+        </div>
       )}
     </Card>
   );
