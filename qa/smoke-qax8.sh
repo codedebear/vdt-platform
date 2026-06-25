@@ -61,6 +61,21 @@ wreq() {
   RESP_BODY=$(printf '%s' "$out" | sed '$d')
 }
 
+# Retry a Claude-spending request through transient upstream errors (429/5xx/529
+# Overloaded) which the compile/generate calls can hit. Leaves RESP_CODE/RESP_BODY
+# set to the final attempt.
+req_retry() {
+  local method=$1 path=$2 token=$3 body=${4:-} n
+  for n in $(seq 1 6); do
+    req "$method" "$path" "$token" "$body"
+    case "$RESP_CODE" in
+      429|500|502|503|504|529) printf '      (retry %s: %s on %s)\n' "$n" "$RESP_CODE" "$path"; sleep 6 ;;
+      *) return 0 ;;
+    esac
+  done
+  return 0
+}
+
 check() {
   if [ "$2" = "$3" ]; then printf 'PASS  %-52s (%s)\n' "$1" "$3"; PASS=$((PASS + 1))
   else printf 'FAIL  %-52s (expected %s, got %s)\n' "$1" "$2" "$3"; printf '      body: %s\n' "$RESP_BODY"; FAIL=$((FAIL + 1)); fi
@@ -175,48 +190,67 @@ else
   echo "-- deep path: round 1 -> RESULTS_REVIEW, retest from RESULTS_REVIEW --"
   req PUT "/api/projects/$PID/target" "$T_OWNER" \
     '{"label":"UAT","baseUrl":"https://staging.example.com","hostAllowlist":["api.staging.example.com"],"isNonProd":true}'
-  req POST "/api/phases/$EXEC_QA/qa/scenarios/confirm" "$T_QA" ""
-  req POST "/api/phases/$EXEC_QA/qa/steps/generate" "$T_QA" ""
-  req POST "/api/phases/$EXEC_QA/qa/steps/confirm" "$T_QA" ""
-  req POST "/api/phases/$EXEC_QA/qa/run/start" "$T_QA" ""
-  check "round1 startRun -> EXECUTING" "EXECUTING" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
-  drain_worker
-  req GET "/api/phases/$EXEC_QA/qa" "$T_QA" ""
-  check "round1 reached RESULTS_REVIEW" "RESULTS_REVIEW" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
-  SRC_NSCEN="$(jget "['"'"'testRun'"'"']['"'"'scenarios'"'"'].__len__()")"
+  req_retry POST "/api/phases/$EXEC_QA/qa/scenarios/confirm" "$T_QA" ""
+  req_retry POST "/api/phases/$EXEC_QA/qa/steps/generate" "$T_QA" ""
+  req_retry POST "/api/phases/$EXEC_QA/qa/steps/confirm" "$T_QA" ""
 
-  # NEW capability: retest WITHOUT signing off (from RESULTS_REVIEW).
-  req POST "/api/phases/$EXEC_QA/qa/retest" "$T_QA" ""
-  assert_clone "retest from RESULTS_REVIEW"
-  EXEC_R2="$(jget "['"'"'testRun'"'"']['"'"'executionId'"'"']")"
-  if [ -n "$EXEC_R2" ] && [ "$EXEC_R2" != "$EXEC_QA" ]; then
-    pass_msg "  round2 executionId differs from source"
+  # Hard gate: a run must be COMPILED before it can start. If compile did not
+  # land (e.g. Anthropic 529/timeout on a large scenario set), skip the rest of
+  # the deep path cleanly instead of cascading dozens of false failures.
+  req GET "/api/phases/$EXEC_QA/qa" "$T_QA" ""
+  ST="$(jget "['testRun']['stage']")"
+  if [ "$ST" != "COMPILED" ]; then
+    fail_msg "compile reached COMPILED" "stage=$ST (deep path skipped; last compile body: $RESP_BODY)"
+    echo "SKIP  remaining deep path — compile did not reach COMPILED (likely Anthropic 529/timeout; re-run)"
   else
-    fail_msg "  round2 executionId differs from source" "got '$EXEC_R2'"
+    pass_msg "compile reached COMPILED"
+    req POST "/api/phases/$EXEC_QA/qa/run/start" "$T_QA" ""
+    check "round1 startRun -> EXECUTING" "EXECUTING" "$(jget "['testRun']['stage']")"
+    drain_worker
+    req GET "/api/phases/$EXEC_QA/qa" "$T_QA" ""
+    check "round1 reached RESULTS_REVIEW" "RESULTS_REVIEW" "$(jget "['testRun']['stage']")"
+    SRC_NSCEN="$(jget "['testRun']['scenarios'].__len__()")"
+
+    if [ "$(jget "['testRun']['stage']")" != "RESULTS_REVIEW" ]; then
+      echo "SKIP  retest checks — run not at RESULTS_REVIEW (is the Mac worker running to drain EXECUTING?)"
+    else
+      # NEW capability: retest WITHOUT signing off (from RESULTS_REVIEW).
+      req POST "/api/phases/$EXEC_QA/qa/retest" "$T_QA" ""
+      assert_clone "retest from RESULTS_REVIEW"
+      EXEC_R2="$(jget "['testRun']['executionId']")"
+      if [ -n "$EXEC_R2" ] && [ "$EXEC_R2" != "$EXEC_QA" ]; then
+        pass_msg "  round2 executionId differs from source"
+      else
+        fail_msg "  round2 executionId differs from source" "got '$EXEC_R2'"
+      fi
+      check "  round2 same scenario count" "$SRC_NSCEN" "$(jget "['testRun']['scenarios'].__len__()")"
+      req GET "/api/phases/$EXEC_QA" "$T_QA" ""
+      check "  source(round1) finalized -> APPROVED" "APPROVED" "$(jget "['status']")"
+      req GET "/api/phases/$EXEC_QA/qa" "$T_QA" ""
+      check "  source(round1) run normalized -> EXPORTED" "EXPORTED" "$(jget "['testRun']['stage']")"
+
+      if [ -n "$EXEC_R2" ]; then
+        echo
+        echo "-- round 2 -> EXPORTED, retest from EXPORTED --"
+        req POST "/api/phases/$EXEC_R2/qa/run/start" "$T_QA" ""
+        check "round2 startRun -> EXECUTING" "EXECUTING" "$(jget "['testRun']['stage']")"
+        drain_worker
+        req GET "/api/phases/$EXEC_R2/qa" "$T_QA" ""
+        check "round2 reached RESULTS_REVIEW" "RESULTS_REVIEW" "$(jget "['testRun']['stage']")"
+        if [ "$(jget "['testRun']['stage']")" = "RESULTS_REVIEW" ]; then
+          req POST "/api/phases/$EXEC_R2/qa/results/confirm" "$T_QA" '{"version":"1.0"}'
+          check "round2 sign-off -> EXPORTED" "EXPORTED" "$(jget "['testRun']['stage']")"
+          req POST "/api/phases/$EXEC_R2/qa/retest" "$T_QA" ""
+          assert_clone "retest from EXPORTED"
+          EXEC_R3="$(jget "['testRun']['executionId']")"
+          req GET "/api/phases/$EXEC_R2" "$T_QA" ""
+          check "  source(round2) finalized -> APPROVED" "APPROVED" "$(jget "['status']")"
+          [ -n "$EXEC_R3" ] && { req POST "/api/phases/$EXEC_R3/qa/run/start" "$T_QA" ""; \
+            check "round3 startRun -> EXECUTING" "EXECUTING" "$(jget "['testRun']['stage']")"; }
+        fi
+      fi
+    fi
   fi
-  check "  round2 same scenario count" "$SRC_NSCEN" "$(jget "['"'"'testRun'"'"']['"'"'scenarios'"'"'].__len__()")"
-  req GET "/api/phases/$EXEC_QA" "$T_QA" ""
-  check "  source(round1) finalized -> APPROVED" "APPROVED" "$(jget "['"'"'status'"'"']")"
-  req GET "/api/phases/$EXEC_QA/qa" "$T_QA" ""
-  check "  source(round1) run normalized -> EXPORTED" "EXPORTED" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
-
-  echo
-  echo "-- round 2 -> EXPORTED, retest from EXPORTED --"
-  req POST "/api/phases/$EXEC_R2/qa/run/start" "$T_QA" ""
-  check "round2 startRun -> EXECUTING" "EXECUTING" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
-  drain_worker
-  req GET "/api/phases/$EXEC_R2/qa" "$T_QA" ""
-  check "round2 reached RESULTS_REVIEW" "RESULTS_REVIEW" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
-  req POST "/api/phases/$EXEC_R2/qa/results/confirm" "$T_QA" '{"version":"1.0"}'
-  check "round2 sign-off -> EXPORTED" "EXPORTED" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
-
-  req POST "/api/phases/$EXEC_R2/qa/retest" "$T_QA" ""
-  assert_clone "retest from EXPORTED"
-  EXEC_R3="$(jget "['"'"'testRun'"'"']['"'"'executionId'"'"']")"
-  req GET "/api/phases/$EXEC_R2" "$T_QA" ""
-  check "  source(round2) finalized -> APPROVED" "APPROVED" "$(jget "['"'"'status'"'"']")"
-  req POST "/api/phases/$EXEC_R3/qa/run/start" "$T_QA" ""
-  check "round3 startRun -> EXECUTING" "EXECUTING" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
 fi
 
 echo
