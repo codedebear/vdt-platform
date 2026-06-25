@@ -21,6 +21,11 @@ const envSchema = z.object({
   ANTHROPIC_MAX_TOKENS: z.coerce.number().int().positive().default(8000),
   ANTHROPIC_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   ANTHROPIC_MAX_RETRIES: z.coerce.number().int().min(0).default(2),
+  // App-level retry count for 529 Overloaded responses from the Anthropic API.
+  // Applied on top of the SDK's own maxRetries, with exponential backoff (5s base,
+  // doubles each attempt, capped at 60s, ±25% jitter). Keep default low enough
+  // that worst-case wait (35s) + compile time stays under nginx proxy_read_timeout.
+  ANTHROPIC_529_MAX_RETRIES: z.coerce.number().int().min(0).default(3),
   // Cost/abuse guards for the paid /generate endpoint.
   GENERATE_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(10),
   GENERATE_MAX_PER_RUN: z.coerce.number().int().positive().default(5),
@@ -98,6 +103,7 @@ export const env = {
   anthropicMaxTokens: parsed.data.ANTHROPIC_MAX_TOKENS,
   anthropicTimeoutMs: parsed.data.ANTHROPIC_TIMEOUT_MS,
   anthropicMaxRetries: parsed.data.ANTHROPIC_MAX_RETRIES,
+  anthropic529MaxRetries: parsed.data.ANTHROPIC_529_MAX_RETRIES,
   generateRateLimitPerMin: parsed.data.GENERATE_RATE_LIMIT_PER_MIN,
   generateMaxPerRun: parsed.data.GENERATE_MAX_PER_RUN,
   projectBudgetUsdDefault: parsed.data.PROJECT_BUDGET_USD_DEFAULT,

@@ -4,4 +4,5 @@ module.exports = {
   rootDir: '.',
   testMatch: ['<rootDir>/tests/**/*.test.ts'],
   clearMocks: true,
+  setupFiles: ['<rootDir>/tests/jest-setup-env.ts'],
 };

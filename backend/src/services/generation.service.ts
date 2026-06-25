@@ -163,8 +163,17 @@ export function parseGenerationResponse(response: GenerationResponse): Generatio
   };
 }
 
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function retryDelayMs(attempt: number): number {
+  const base = Math.min(5_000 * 2 ** attempt, 60_000); // 5s → 10s → 20s → 40s → 60s cap
+  return Math.round(base * (0.75 + Math.random() * 0.5)); // ±25% jitter
+}
+
 /**
  * Sends a system + user prompt to Claude and returns the text plus token usage.
+ * Retries automatically on Anthropic 529 (Overloaded) with exponential backoff;
+ * other errors surface immediately as 502.
  * @param system - The system prompt fixing the agent role.
  * @param user - The user prompt carrying project context.
  * @param client - Optional injected client (used by tests); falls back to the
@@ -172,7 +181,7 @@ export function parseGenerationResponse(response: GenerationResponse): Generatio
  * @param documents - Optional PDF document blocks to attach to the user message.
  *   When present, the user content is sent as `[text, ...documents]`; otherwise
  *   it remains a plain string (unchanged behaviour).
- * @throws {AppError} 503 if unconfigured, 502 if the API returns no text or errors.
+ * @throws {AppError} 503 if unconfigured or 529 retries exhausted, 502 on other API errors.
  */
 export async function generateText(
   system: string,
@@ -181,25 +190,43 @@ export async function generateText(
   documents?: DocumentBlock[],
 ): Promise<GenerationResult> {
   const c = client ?? (await getDefaultClient());
+  const maxRetries = env.anthropic529MaxRetries;
 
-  let response: GenerationResponse;
-  try {
-    response = await c.messages.create({
-      model: env.anthropicModel,
-      max_tokens: env.anthropicMaxTokens,
-      system,
-      messages: [{ role: 'user', content: buildUserContent(user, documents) }],
-    });
-  } catch (err) {
-    // Log only the error message server-side (not the raw error object, which
-    // can carry request/prompt content); return a generic message to the client.
-    const message = err instanceof Error ? err.message : String(err);
-    // eslint-disable-next-line no-console
-    console.error('Anthropic generation error:', message);
-    throw new AppError('AI generation request failed upstream', 502);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await c.messages.create({
+        model: env.anthropicModel,
+        max_tokens: env.anthropicMaxTokens,
+        system,
+        messages: [{ role: 'user', content: buildUserContent(user, documents) }],
+      });
+      return parseGenerationResponse(response);
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      // Log only the error message server-side (not the raw error object, which
+      // can carry request/prompt content); return a generic message to the client.
+      const message = err instanceof Error ? err.message : String(err);
+
+      if (status === 529 && attempt < maxRetries) {
+        const delay = retryDelayMs(attempt);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `Anthropic overloaded (529), retry ${attempt + 1}/${maxRetries} in ${Math.round(delay / 1000)}s`,
+        );
+        await sleep(delay);
+        continue;
+      }
+
+      // eslint-disable-next-line no-console
+      console.error('Anthropic generation error:', message);
+      throw new AppError(
+        status === 529
+          ? 'AI service is temporarily overloaded; please try again in a few minutes'
+          : 'AI generation request failed upstream',
+        status === 529 ? 503 : 502,
+      );
+    }
   }
-
-  return parseGenerationResponse(response);
 }
 
 /**

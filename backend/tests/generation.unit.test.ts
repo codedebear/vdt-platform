@@ -86,6 +86,58 @@ describe('generateText', () => {
     await expect(generateText('s', 'u', client)).rejects.toBeInstanceOf(AppError);
     await expect(generateText('s', 'u', client)).rejects.toMatchObject({ statusCode: 502 });
   });
+
+  describe('529 retry', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    it('retries on 529 and succeeds on the third attempt', async () => {
+      let calls = 0;
+      const client: GenerationClient = {
+        messages: {
+          create: async () => {
+            calls++;
+            if (calls < 3) throw Object.assign(new Error('overloaded'), { status: 529 });
+            return { content: [{ type: 'text', text: 'ok' }] };
+          },
+        },
+      };
+      const promise = generateText('s', 'u', client);
+      await jest.runAllTimersAsync();
+      await expect(promise).resolves.toMatchObject({ text: 'ok' });
+      expect(calls).toBe(3);
+    });
+
+    it('throws 503 after exhausting 529 retries', async () => {
+      const client: GenerationClient = {
+        messages: {
+          create: async () => {
+            throw Object.assign(new Error('overloaded'), { status: 529 });
+          },
+        },
+      };
+      const promise = generateText('s', 'u', client);
+      // Attach the rejection handler BEFORE advancing timers so Node doesn't
+      // emit an unhandled-rejection warning during the retry sleeps.
+      const assertion = expect(promise).rejects.toMatchObject({ statusCode: 503 });
+      await jest.runAllTimersAsync();
+      await assertion;
+    });
+
+    it('does not retry on non-529 errors', async () => {
+      let calls = 0;
+      const client: GenerationClient = {
+        messages: {
+          create: async () => {
+            calls++;
+            throw Object.assign(new Error('server error'), { status: 500 });
+          },
+        },
+      };
+      await expect(generateText('s', 'u', client)).rejects.toMatchObject({ statusCode: 502 });
+      expect(calls).toBe(1);
+    });
+  });
 });
 
 /** Builds a fake batch client capturing the create args and returning a handle. */
