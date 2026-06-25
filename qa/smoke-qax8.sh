@@ -121,18 +121,24 @@ assert_clone() {
   local label=$1
   check "$label -> 201" 201 "$RESP_CODE"
   check "  $label lands at COMPILED" "COMPILED" "$(jget "['testRun']['stage']")"
+  local tmp; tmp="$(mktemp)"; printf '%s' "$RESP_BODY" > "$tmp"
   local SPEC NORES
-  SPEC="$(printf '"'"'%s'"'"' "$RESP_BODY" | python3 -c "
-import sys,json
-r=json.load(sys.stdin)['"'"'testRun'"'"']
-st=[x for sc in r['"'"'scenarios'"'"'] for x in sc['"'"'steps'"'"']]
-print('"'"'yes'"'"' if st and all(x.get('"'"'artifactSpec'"'"') is not None for x in st) else '"'"'no'"'"')")"
+  SPEC="$(python3 - "$tmp" <<'PYEOF'
+import sys, json
+r = json.load(open(sys.argv[1]))["testRun"]
+st = [x for sc in r["scenarios"] for x in sc["steps"]]
+print("yes" if st and all(x.get("artifactSpec") is not None for x in st) else "no")
+PYEOF
+)"
+  NORES="$(python3 - "$tmp" <<'PYEOF'
+import sys, json
+r = json.load(open(sys.argv[1]))["testRun"]
+st = [x for sc in r["scenarios"] for x in sc["steps"]]
+print("yes" if all(x.get("result") is None for x in st) else "no")
+PYEOF
+)"
+  rm -f "$tmp"
   check "  $label every step has artifactSpec" "yes" "$SPEC"
-  NORES="$(printf '"'"'%s'"'"' "$RESP_BODY" | python3 -c "
-import sys,json
-r=json.load(sys.stdin)['"'"'testRun'"'"']
-st=[x for sc in r['"'"'scenarios'"'"'] for x in sc['"'"'steps'"'"']]
-print('"'"'yes'"'"' if all(x.get('"'"'result'"'"') is None for x in st) else '"'"'no'"'"')")"
   check "  $label no results carried over" "yes" "$NORES"
 }
 
