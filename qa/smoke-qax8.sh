@@ -68,6 +68,47 @@ check() {
 pass_msg() { printf 'PASS  %-52s\n' "$1"; PASS=$((PASS + 1)); }
 fail_msg() { printf 'FAIL  %-52s %s\n' "$1" "${2:-}"; FAIL=$((FAIL + 1)); }
 
+# Drain the global worker queue, submitting PASS for every step (0 Claude tokens).
+drain_worker() {
+  for _ in $(seq 1 20); do
+    wreq POST /api/worker/jobs/claim '"'"'{"workerId":"smoke-qax8"}'"'"'
+    [ "$RESP_CODE" != "200" ] && break
+    local JOB="$RESP_BODY"
+    local RUN_ID NSTEPS RESULTS
+    RUN_ID="$(printf '"'"'%s'"'"' "$JOB" | python3 -c "import sys,json;print(json.load(sys.stdin)['"'"'job'"'"']['"'"'runId'"'"'])")"
+    NSTEPS="$(printf '"'"'%s'"'"' "$JOB" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['"'"'job'"'"']['"'"'steps'"'"']))")"
+    [ "$NSTEPS" -eq 0 ] 2>/dev/null && continue
+    RESULTS="$(printf '"'"'%s'"'"' "$JOB" | PNG="$PNG_B64" python3 -c "
+import sys,json,os
+job=json.load(sys.stdin)['"'"'job'"'"']
+png=os.environ['"'"'PNG'"'"']
+res=[{'"'"'stepId'"'"':s['"'"'stepId'"'"'],'"'"'status'"'"':'"'"'PASS'"'"','"'"'actualResult'"'"':'"'"'ok'"'"','"'"'durationMs'"'"':5,
+      '"'"'evidence'"'"':png,'"'"'evidenceMime'"'"':'"'"'image/png'"'"'} for s in job['"'"'steps'"'"']]
+print(json.dumps({'"'"'workerId'"'"':'"'"'smoke-qax8'"'"','"'"'results'"'"':res}))")"
+    wreq POST "/api/worker/jobs/$RUN_ID/results" "$RESULTS"
+  done
+}
+
+# Assert the run returned in RESP_BODY is a fresh COMPILED clone (no results).
+assert_clone() {
+  local label=$1
+  check "$label -> 201" 201 "$RESP_CODE"
+  check "  $label lands at COMPILED" "COMPILED" "$(jget "['testRun']['stage']")"
+  local SPEC NORES
+  SPEC="$(printf '"'"'%s'"'"' "$RESP_BODY" | python3 -c "
+import sys,json
+r=json.load(sys.stdin)['"'"'testRun'"'"']
+st=[x for sc in r['"'"'scenarios'"'"'] for x in sc['"'"'steps'"'"']]
+print('"'"'yes'"'"' if st and all(x.get('"'"'artifactSpec'"'"') is not None for x in st) else '"'"'no'"'"')")"
+  check "  $label every step has artifactSpec" "yes" "$SPEC"
+  NORES="$(printf '"'"'%s'"'"' "$RESP_BODY" | python3 -c "
+import sys,json
+r=json.load(sys.stdin)['"'"'testRun'"'"']
+st=[x for sc in r['"'"'scenarios'"'"'] for x in sc['"'"'steps'"'"']]
+print('"'"'yes'"'"' if all(x.get('"'"'result'"'"') is None for x in st) else '"'"'no'"'"')")"
+  check "  $label no results carried over" "yes" "$NORES"
+}
+
 register() { req POST /api/auth/register "" "{\"email\":\"$1\",\"password\":\"$PASSWORD\",\"name\":\"$2\"}"; }
 login()    { req POST /api/auth/login "" "{\"email\":\"$1\",\"password\":\"$PASSWORD\"}"; jget "['token']"; }
 
@@ -131,74 +172,49 @@ elif [ -z "${WORKER_TOKEN:-}" ]; then
   echo "SKIP  deep retest path (WORKER_TOKEN not set)"
 else
   echo
-  echo "-- deep path: drive run to EXPORTED, then retest --"
+  echo "-- deep path: round 1 -> RESULTS_REVIEW, retest from RESULTS_REVIEW --"
   req PUT "/api/projects/$PID/target" "$T_OWNER" \
     '{"label":"UAT","baseUrl":"https://staging.example.com","hostAllowlist":["api.staging.example.com"],"isNonProd":true}'
   req POST "/api/phases/$EXEC_QA/qa/scenarios/confirm" "$T_QA" ""
   req POST "/api/phases/$EXEC_QA/qa/steps/generate" "$T_QA" ""
   req POST "/api/phases/$EXEC_QA/qa/steps/confirm" "$T_QA" ""
   req POST "/api/phases/$EXEC_QA/qa/run/start" "$T_QA" ""
-  check "startRun -> EXECUTING" "EXECUTING" "$(jget "['testRun']['stage']")"
-
-  for _ in $(seq 1 20); do
-    wreq POST /api/worker/jobs/claim '{"workerId":"smoke-qax8"}'
-    [ "$RESP_CODE" != "200" ] && break
-    JOB="$RESP_BODY"
-    RUN_ID="$(printf '%s' "$JOB" | python3 -c "import sys,json;print(json.load(sys.stdin)['job']['runId'])")"
-    NSTEPS="$(printf '%s' "$JOB" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['job']['steps']))")"
-    [ "$NSTEPS" -eq 0 ] 2>/dev/null && continue
-    RESULTS="$(printf '%s' "$JOB" | PNG="$PNG_B64" python3 -c "
-import sys,json,os
-job=json.load(sys.stdin)['job']
-png=os.environ['PNG']
-res=[{'stepId':s['stepId'],'status':'PASS','actualResult':'ok','durationMs':5,
-      'evidence':png,'evidenceMime':'image/png'} for s in job['steps']]
-print(json.dumps({'workerId':'smoke-qax8','results':res}))")"
-    wreq POST "/api/worker/jobs/$RUN_ID/results" "$RESULTS"
-  done
-
+  check "round1 startRun -> EXECUTING" "EXECUTING" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
+  drain_worker
   req GET "/api/phases/$EXEC_QA/qa" "$T_QA" ""
-  check "run reached RESULTS_REVIEW" "RESULTS_REVIEW" "$(jget "['testRun']['stage']")"
-  SRC_NSCEN="$(jget "['testRun']['scenarios'].__len__()")"
+  check "round1 reached RESULTS_REVIEW" "RESULTS_REVIEW" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
+  SRC_NSCEN="$(jget "['"'"'testRun'"'"']['"'"'scenarios'"'"'].__len__()")"
 
-  req POST "/api/phases/$EXEC_QA/qa/results/confirm" "$T_QA" '{"version":"1.0"}'
-  check "sign-off -> EXPORTED" "EXPORTED" "$(jget "['testRun']['stage']")"
+  # NEW capability: retest WITHOUT signing off (from RESULTS_REVIEW).
+  req POST "/api/phases/$EXEC_QA/qa/retest" "$T_QA" ""
+  assert_clone "retest from RESULTS_REVIEW"
+  EXEC_R2="$(jget "['"'"'testRun'"'"']['"'"'executionId'"'"']")"
+  if [ -n "$EXEC_R2" ] && [ "$EXEC_R2" != "$EXEC_QA" ]; then
+    pass_msg "  round2 executionId differs from source"
+  else
+    fail_msg "  round2 executionId differs from source" "got '$EXEC_R2'"
+  fi
+  check "  round2 same scenario count" "$SRC_NSCEN" "$(jget "['"'"'testRun'"'"']['"'"'scenarios'"'"'].__len__()")"
+  req GET "/api/phases/$EXEC_QA" "$T_QA" ""
+  check "  source(round1) finalized -> APPROVED" "APPROVED" "$(jget "['"'"'status'"'"']")"
 
   echo
-  echo "-- the retest itself --"
-  req POST "/api/phases/$EXEC_QA/qa/retest" "$T_QA" ""
-  check "retest from EXPORTED -> 201" 201 "$RESP_CODE"
-  NEW_EXEC="$(jget "['testRun']['executionId']")"
-  check "new run lands at COMPILED" "COMPILED" "$(jget "['testRun']['stage']")"
-  if [ -n "$NEW_EXEC" ] && [ "$NEW_EXEC" != "$EXEC_QA" ]; then
-    pass_msg "  -> new executionId differs from source"
-  else
-    fail_msg "  -> new executionId differs from source" "got '$NEW_EXEC'"
-  fi
-  NEW_NSCEN="$(jget "['testRun']['scenarios'].__len__()")"
-  check "  -> same scenario count cloned" "$SRC_NSCEN" "$NEW_NSCEN"
+  echo "-- round 2 -> EXPORTED, retest from EXPORTED --"
+  req POST "/api/phases/$EXEC_R2/qa/run/start" "$T_QA" ""
+  check "round2 startRun -> EXECUTING" "EXECUTING" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
+  drain_worker
+  req GET "/api/phases/$EXEC_R2/qa" "$T_QA" ""
+  check "round2 reached RESULTS_REVIEW" "RESULTS_REVIEW" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
+  req POST "/api/phases/$EXEC_R2/qa/results/confirm" "$T_QA" '{"version":"1.0"}'
+  check "round2 sign-off -> EXPORTED" "EXPORTED" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
 
-  # Every cloned step has an artifactSpec but no result yet (results seed at startRun).
-  ALL_SPEC="$(printf '%s' "$RESP_BODY" | python3 -c "
-import sys,json
-r=json.load(sys.stdin)['testRun']
-steps=[st for sc in r['scenarios'] for st in sc['steps']]
-print('yes' if steps and all(st.get('artifactSpec') is not None for st in steps) else 'no')")"
-  check "  -> every cloned step has an artifactSpec" "yes" "$ALL_SPEC"
-  NO_RESULTS="$(printf '%s' "$RESP_BODY" | python3 -c "
-import sys,json
-r=json.load(sys.stdin)['testRun']
-steps=[st for sc in r['scenarios'] for st in sc['steps']]
-print('yes' if all(st.get('result') is None for st in steps) else 'no')")"
-  check "  -> no results carried over" "yes" "$NO_RESULTS"
-
-  # Source run is now closed (APPROVED) so history stays + the new run could start.
-  req GET "/api/phases/$EXEC_QA" "$T_QA" ""
-  check "source run finalized -> APPROVED" "APPROVED" "$(jget "['status']")"
-
-  # New run can be started (COMPILED -> EXECUTING) reusing the cloned artifacts.
-  req POST "/api/phases/$NEW_EXEC/qa/run/start" "$T_QA" ""
-  check "new run startRun -> EXECUTING" "EXECUTING" "$(jget "['testRun']['stage']")"
+  req POST "/api/phases/$EXEC_R2/qa/retest" "$T_QA" ""
+  assert_clone "retest from EXPORTED"
+  EXEC_R3="$(jget "['"'"'testRun'"'"']['"'"'executionId'"'"']")"
+  req GET "/api/phases/$EXEC_R2" "$T_QA" ""
+  check "  source(round2) finalized -> APPROVED" "APPROVED" "$(jget "['"'"'status'"'"']")"
+  req POST "/api/phases/$EXEC_R3/qa/run/start" "$T_QA" ""
+  check "round3 startRun -> EXECUTING" "EXECUTING" "$(jget "['"'"'testRun'"'"']['"'"'stage'"'"']")"
 fi
 
 echo

@@ -957,14 +957,14 @@ export async function confirmScenarios(executionId: string, actor: Actor) {
 }
 
 /**
- * Starts a **Full Retest**: clones a completed (EXPORTED) QA run into a brand-new
+ * Starts a **Full Retest**: clones a reviewed (RESULTS_REVIEW) or signed-off (EXPORTED) QA run into a brand-new
  * QA `PhaseExecution`, landing the new run at the COMPILED stage so the operator
  * can re-execute the exact same compiled artifacts against freshly-fixed code with
  * **0 Claude tokens** (no re-generation, no re-compilation). The previous run is
  * kept intact as a separate execution row — full QA history is preserved and the
  * UATR "Run No" increments naturally.
  *
- * Because nothing else closes a QA round, this finalizes the signed-off source
+ * Because nothing else closes a QA round, this finalizes the source
  * execution (APPROVED + completedAt) inside the same transaction; otherwise the
  * still-open source would block starting a new QA run (see workflow.canStartPhase).
  * The caller then drives the new run with the normal `startRun` action.
@@ -1012,9 +1012,10 @@ export async function retestRun(sourceExecutionId: string, actor: Actor) {
   if (!source.testRun) {
     throw new AppError('This QA phase has no run to retest', 409);
   }
-  if ((source.testRun.stage as QaStage) !== 'EXPORTED') {
+  const srcStage = source.testRun.stage as QaStage;
+  if (srcStage !== 'RESULTS_REVIEW' && srcStage !== 'EXPORTED') {
     throw new AppError(
-      `Only a signed-off (EXPORTED) run can be retested (current: ${source.testRun.stage})`,
+      `Only a reviewed (RESULTS_REVIEW) or signed-off (EXPORTED) run can be retested (current: ${srcStage})`,
       409,
     );
   }
