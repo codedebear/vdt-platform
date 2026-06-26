@@ -22,6 +22,7 @@ import {
   getStepEvidence,
   generateScenarios,
   confirmScenarios,
+  deleteScenarioById,
   generateSteps,
   confirmSteps,
   recompileArtifacts,
@@ -67,6 +68,7 @@ phaseRouter.get('/:executionId/qa', getTestRun);
 phaseRouter.get('/:executionId/qa/steps/:stepId/evidence', getStepEvidence);
 phaseRouter.post('/:executionId/qa/scenarios/generate', generateRateLimiter, generateScenarios);
 phaseRouter.post('/:executionId/qa/scenarios/confirm', confirmScenarios);
+phaseRouter.delete('/:executionId/qa/scenarios/:scenarioId', deleteScenarioById);
 phaseRouter.post('/:executionId/qa/steps/generate', generateRateLimiter, generateSteps);
 phaseRouter.post('/:executionId/qa/steps/confirm', generateRateLimiter, confirmSteps);
 phaseRouter.post('/:executionId/qa/artifacts/recompile', generateRateLimiter, recompileArtifacts);

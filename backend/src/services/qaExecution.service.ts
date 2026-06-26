@@ -196,10 +196,40 @@ export async function getStepEvidence(
  * @throws {AppError} 404/403/409 per guards, 402 over budget, 502/503 on
  *   generation failure or unparseable output.
  */
+/**
+ * Deletes a single draft scenario (by ID) from a SCENARIO_DRAFT run, allowing
+ * the reviewer to exclude individual scenarios before confirming.
+ */
+export async function deleteScenario(
+  executionId: string,
+  scenarioId: string,
+  actor: Actor,
+) {
+  const execution = await loadWritableQaExecution(executionId, actor);
+  const stage = (execution.testRun?.stage ?? 'SCENARIO_DRAFT') as QaStage;
+  if (stage !== 'SCENARIO_DRAFT') {
+    throw new AppError(
+      `Scenarios can only be deleted at the SCENARIO_DRAFT stage (current: ${stage})`,
+      409,
+    );
+  }
+  if (!execution.testRun) {
+    throw new AppError('No QA run found for this execution', 404);
+  }
+  const deleted = await prisma.testScenario.deleteMany({
+    where: { id: scenarioId, runId: execution.testRun.id },
+  });
+  if (deleted.count === 0) {
+    throw new AppError('Scenario not found in this run', 404);
+  }
+  return getTestRun(executionId, actor);
+}
+
 export async function generateScenarios(
   executionId: string,
   actor: Actor,
   feedback?: string,
+  scenarioFeedback?: { no: number; feedback: string }[],
   client?: GenerationClient,
 ) {
   const execution = await loadWritableQaExecution(executionId, actor);
@@ -220,9 +250,22 @@ export async function generateScenarios(
     );
   }
 
+  // Compose per-scenario feedback into the global feedback string so the model
+  // gets precise guidance about specific scenarios in REVISION mode.
+  let composedFeedback = feedback?.trim();
+  if (scenarioFeedback && scenarioFeedback.length > 0) {
+    const lines = scenarioFeedback
+      .filter((sf) => sf.feedback.trim())
+      .map((sf) => `- Scenario #${sf.no}: ${sf.feedback.trim()}`);
+    if (lines.length > 0) {
+      const perPart = `Per-scenario feedback:\n${lines.join('\n')}`;
+      composedFeedback = composedFeedback ? `${composedFeedback}\n\n${perPart}` : perPart;
+    }
+  }
+
   // For a feedback-steered regeneration, load the current draft scenarios so the
   // model revises them rather than starting over.
-  const trimmedFeedback = feedback?.trim();
+  const trimmedFeedback = composedFeedback;
   const currentScenarios =
     trimmedFeedback && execution.testRun
       ? (

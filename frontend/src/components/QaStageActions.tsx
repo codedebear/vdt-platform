@@ -33,6 +33,10 @@ interface QaStageActionsProps {
   writable: boolean;
   /** Called with the refreshed run after any successful mutation. */
   onUpdated: (run: TestRun) => void;
+  /** Scenario IDs the reviewer has unchecked (deleted before confirming). */
+  excluded?: Set<string>;
+  /** Per-scenario feedback keyed by scenario ID. */
+  scenarioFeedbacks?: Record<string, string>;
 }
 
 /** A Claude-spending action awaiting cost confirmation. */
@@ -55,6 +59,8 @@ export default function QaStageActions({
   canWork,
   writable,
   onUpdated,
+  excluded,
+  scenarioFeedbacks,
 }: QaStageActionsProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -214,29 +220,59 @@ export default function QaStageActions({
       {stage === 'SCENARIO_DRAFT' && hasScenarios && (
         <div className="space-y-3">
           <p className="text-sm text-slate-600">
-            Review the scenarios below. Confirm to draft steps, or regenerate them —
-            optionally with feedback to steer the revision.
+            Review the scenarios below. Uncheck any you want to exclude, add per-scenario
+            feedback inline, then confirm or regenerate.
           </p>
           <FeedbackBox value={feedback} onChange={setFeedback} disabled={busy} />
           <div className="flex flex-wrap gap-2">
             <Button
               variant="primary"
               loading={busy}
-              onClick={() => void execute(() => api.confirmScenarios(executionId))}
+              onClick={() =>
+                void execute(async () => {
+                  // Delete excluded scenarios in order, then confirm what remains.
+                  if (excluded && excluded.size > 0) {
+                    for (const id of excluded) {
+                      await api.deleteScenario(executionId, id);
+                    }
+                  }
+                  return api.confirmScenarios(executionId);
+                })
+              }
             >
-              Confirm scenarios →
+              {(() => {
+                const excludedCount = excluded?.size ?? 0;
+                const total = testRun?.scenarios.length ?? 0;
+                return excludedCount > 0
+                  ? `Confirm ${total - excludedCount}/${total} →`
+                  : 'Confirm scenarios →';
+              })()}
             </Button>
             <Button
               variant="secondary"
               disabled={busy}
-              onClick={() =>
-                confirmCost(
-                  trimmedFeedback ? 'Regenerate scenarios with feedback' : 'Regenerate scenarios',
-                  () => api.generateScenarios(executionId, trimmedFeedback),
-                )
-              }
+              onClick={() => {
+                const perScenario = testRun?.scenarios
+                  .filter((s) => scenarioFeedbacks?.[s.id]?.trim())
+                  .map((s) => ({ no: s.no, feedback: scenarioFeedbacks![s.id].trim() }));
+                const hasPerFeedback = perScenario && perScenario.length > 0;
+                const label =
+                  trimmedFeedback || hasPerFeedback
+                    ? 'Regenerate scenarios with feedback'
+                    : 'Regenerate scenarios';
+                confirmCost(label, () =>
+                  api.generateScenarios(executionId, trimmedFeedback, perScenario),
+                );
+              }}
             >
-              {trimmedFeedback ? 'Regenerate with feedback' : 'Regenerate'}
+              {(() => {
+                const hasPerFeedback = testRun?.scenarios.some(
+                  (s) => scenarioFeedbacks?.[s.id]?.trim(),
+                );
+                return trimmedFeedback || hasPerFeedback
+                  ? 'Regenerate with feedback'
+                  : 'Regenerate';
+              })()}
             </Button>
           </div>
         </div>

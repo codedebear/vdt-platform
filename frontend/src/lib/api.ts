@@ -257,11 +257,25 @@ export const api = {
     ),
 
   /** AI-draft (or feedback-regenerate) the QA scenarios. */
-  generateScenarios: (executionId: string, feedback?: string) =>
+  generateScenarios: (
+    executionId: string,
+    feedback?: string,
+    scenarioFeedback?: { no: number; feedback: string }[],
+  ) =>
     request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/scenarios/generate`, {
       method: 'POST',
-      body: feedback ? { feedback } : {},
+      body: {
+        ...(feedback ? { feedback } : {}),
+        ...(scenarioFeedback && scenarioFeedback.length > 0 ? { scenarioFeedback } : {}),
+      },
     }).then((r) => r.testRun),
+
+  /** Delete one draft scenario (SCENARIO_DRAFT only). Returns updated run. */
+  deleteScenario: (executionId: string, scenarioId: string) =>
+    request<{ testRun: TestRun }>(
+      `/api/phases/${executionId}/qa/scenarios/${scenarioId}`,
+      { method: 'DELETE' },
+    ).then((r) => r.testRun),
 
   /** Confirm the drafted scenarios → STEPS_DRAFT. */
   confirmScenarios: (executionId: string) =>

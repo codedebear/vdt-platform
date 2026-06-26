@@ -17,6 +17,15 @@ const feedbackSchema = z.object({
     .string()
     .max(env.inputMaxChars, `Feedback must be at most ${env.inputMaxChars} characters`)
     .optional(),
+  // Per-scenario feedback for SCENARIO_DRAFT regeneration (scenario/generate only).
+  scenarioFeedback: z
+    .array(
+      z.object({
+        no: z.number().int().positive(),
+        feedback: z.string().max(2000),
+      }),
+    )
+    .optional(),
 });
 
 // Target stage for a back-navigation ("request changes" within the QA flow).
@@ -84,11 +93,12 @@ export async function generateScenarios(
     if (!req.user) {
       throw new AppError('Unauthorized', 401);
     }
-    const { feedback } = feedbackSchema.parse(req.body ?? {});
+    const { feedback, scenarioFeedback } = feedbackSchema.parse(req.body ?? {});
     const testRun = await qaService.generateScenarios(
       req.params.executionId,
       { id: req.user.id, role: req.user.role },
       feedback,
+      scenarioFeedback,
     );
     res.status(200).json({ testRun });
   } catch (err) {
@@ -96,6 +106,27 @@ export async function generateScenarios(
       next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
       return;
     }
+    next(err);
+  }
+}
+
+/** DELETE /api/phases/:executionId/qa/scenarios/:scenarioId — remove one draft scenario. */
+export async function deleteScenarioById(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const testRun = await qaService.deleteScenario(
+      req.params.executionId,
+      req.params.scenarioId,
+      { id: req.user.id, role: req.user.role },
+    );
+    res.status(200).json({ testRun });
+  } catch (err) {
     next(err);
   }
 }

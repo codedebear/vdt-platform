@@ -44,6 +44,9 @@ export default function QaRunPage() {
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  // Per-scenario selection and feedback (SCENARIO_DRAFT only).
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [scenarioFeedbacks, setScenarioFeedbacks] = useState<Record<string, string>>({});
 
   const load = useCallback(async (): Promise<void> => {
     if (!executionId) return;
@@ -72,6 +75,12 @@ export default function QaRunPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Reset per-scenario selection whenever the run itself changes (new run, new stage).
+  useEffect(() => {
+    setExcluded(new Set());
+    setScenarioFeedbacks({});
+  }, [testRun?.id, testRun?.stage]);
 
   // While the run is EXECUTING, poll for results so the page reflects the
   // worker's progress without a manual refresh. The interval is torn down as
@@ -143,6 +152,8 @@ export default function QaRunPage() {
             canWork={canWorkQa}
             writable={writable}
             onUpdated={setTestRun}
+            excluded={excluded}
+            scenarioFeedbacks={scenarioFeedbacks}
           />
 
           {!testRun ? (
@@ -203,7 +214,25 @@ export default function QaRunPage() {
               ) : (
                 <div className="space-y-4">
                   {testRun.scenarios.map((scenario) => (
-                    <ScenarioCard key={scenario.id} scenario={scenario} executionId={executionId ?? ''} />
+                    <ScenarioCard
+                      key={scenario.id}
+                      scenario={scenario}
+                      executionId={executionId ?? ''}
+                      showExclude={testRun.stage === 'SCENARIO_DRAFT' && canWorkQa && writable}
+                      isExcluded={excluded.has(scenario.id)}
+                      onToggleExclude={(id) =>
+                        setExcluded((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(id)) next.delete(id);
+                          else next.add(id);
+                          return next;
+                        })
+                      }
+                      scenarioFeedback={scenarioFeedbacks[scenario.id] ?? ''}
+                      onFeedbackChange={(id, val) =>
+                        setScenarioFeedbacks((prev) => ({ ...prev, [id]: val }))
+                      }
+                    />
                   ))}
                 </div>
               )}
@@ -215,29 +244,87 @@ export default function QaRunPage() {
   );
 }
 
-/** One scenario block: header + a read-only steps/results table. */
+/** One scenario block: header + optional per-scenario exclude/feedback + steps table. */
 function ScenarioCard({
   scenario,
   executionId,
+  showExclude = false,
+  isExcluded = false,
+  onToggleExclude,
+  scenarioFeedback = '',
+  onFeedbackChange,
 }: {
   scenario: TestScenario;
   executionId: string;
+  showExclude?: boolean;
+  isExcluded?: boolean;
+  onToggleExclude?: (id: string) => void;
+  scenarioFeedback?: string;
+  onFeedbackChange?: (id: string, val: string) => void;
 }) {
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+
   return (
-    <Card className="p-4">
+    <Card className={`p-4 transition-opacity${isExcluded ? ' opacity-40' : ''}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs font-medium text-slate-400">#{scenario.no}</span>
-            <span className="font-medium text-slate-800">{scenario.testName}</span>
+        <div className="flex items-start gap-2">
+          {showExclude && (
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 cursor-pointer rounded border-slate-300 text-brand-600 accent-indigo-600"
+              checked={!isExcluded}
+              onChange={() => onToggleExclude?.(scenario.id)}
+              title={isExcluded ? 'Click to include' : 'Click to exclude'}
+            />
+          )}
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-slate-400">#{scenario.no}</span>
+              <span className={`font-medium${isExcluded ? ' line-through text-slate-400' : ' text-slate-800'}`}>
+                {scenario.testName}
+              </span>
+            </div>
+            <p className="mt-0.5 text-xs text-slate-400">
+              {scenario.topic}
+              {scenario.system ? ` · ${scenario.system}` : ''}
+            </p>
           </div>
-          <p className="mt-0.5 text-xs text-slate-400">
-            {scenario.topic}
-            {scenario.system ? ` · ${scenario.system}` : ''}
-          </p>
         </div>
         <ScenarioResultBadge result={scenario.result} />
       </div>
+
+      {showExclude && !isExcluded && (
+        <div className="mt-2 pl-6">
+          {!feedbackOpen ? (
+            <button
+              type="button"
+              className="text-xs text-slate-400 hover:text-indigo-600"
+              onClick={() => setFeedbackOpen(true)}
+            >
+              {scenarioFeedback ? `Feedback: "${scenarioFeedback.slice(0, 40)}${scenarioFeedback.length > 40 ? '…' : ''}"` : '+ Add feedback'}
+            </button>
+          ) : (
+            <div className="flex items-start gap-2">
+              <textarea
+                autoFocus
+                rows={2}
+                className="flex-1 rounded border border-slate-200 px-2 py-1 text-xs text-slate-700 focus:border-indigo-400 focus:outline-none"
+                placeholder="Feedback for this scenario…"
+                value={scenarioFeedback}
+                onChange={(e) => onFeedbackChange?.(scenario.id, e.target.value)}
+              />
+              <button
+                type="button"
+                className="text-xs text-slate-400 hover:text-slate-600"
+                onClick={() => setFeedbackOpen(false)}
+              >
+                Done
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
 
       {scenario.steps.length > 0 && (
         <div className="mt-3 overflow-x-auto">
