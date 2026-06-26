@@ -20,6 +20,7 @@ import type {
   ReviewPhaseInput,
   Role,
   StartPhaseInput,
+  TargetEnvironment,
   TestRun,
   UatrSignOffInput,
 } from './types';
@@ -384,6 +385,36 @@ export const api = {
   /** Downloads the UATR PDF "Test Result Report" (full info + per-step evidence). */
   downloadUatrReport: (executionId: string): Promise<void> =>
     downloadBlobFile(`/api/phases/${executionId}/qa/report.pdf`, `UATR_${executionId}.pdf`),
+
+  /* ---- Target environment & secrets (E-3) --------------------------------- */
+
+  getTarget: (projectId: string) =>
+    request<{ target: TargetEnvironment | null }>(`/api/projects/${projectId}/target`).then(
+      (r) => r.target,
+    ),
+
+  setTarget: (
+    projectId: string,
+    input: { label?: string; baseUrl: string; hostAllowlist: string[]; isNonProd: boolean },
+  ) =>
+    request<{ target: TargetEnvironment }>(`/api/projects/${projectId}/target`, {
+      method: 'PUT',
+      body: input,
+    }).then((r) => r.target),
+
+  listSecrets: (projectId: string) =>
+    request<{ names: string[] }>(`/api/projects/${projectId}/secrets`).then((r) => r.names),
+
+  setSecret: (projectId: string, name: string, value: string) =>
+    request<{ name: string }>(`/api/projects/${projectId}/secrets`, {
+      method: 'PUT',
+      body: { name, value },
+    }),
+
+  deleteSecret: (projectId: string, name: string) =>
+    request<void>(`/api/projects/${projectId}/secrets/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    }),
 
   /** List all users (SUPER_ADMIN only). */
   listUsers: () => request<AdminUser[]>('/api/users'),

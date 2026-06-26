@@ -20,6 +20,7 @@ import {
 import { ErrorState, LoadingState } from '../components/PageState';
 import PhaseExecutionCard from '../components/PhaseExecutionCard';
 import StartPhaseCard from '../components/StartPhaseCard';
+import TargetSecretsCard from '../components/TargetSecretsCard';
 
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -170,6 +171,10 @@ export default function ProjectDetailPage() {
                 />
               ))}
             </div>
+          )}
+
+          {(role === 'PROJECT_OWNER' || role === 'SUPER_ADMIN') && (
+            <TargetSecretsCard projectId={project.id} />
           )}
         </>
       )}

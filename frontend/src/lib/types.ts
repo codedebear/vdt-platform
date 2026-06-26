@@ -232,6 +232,18 @@ export interface TestRun {
   scenarios: TestScenario[];
 }
 
+/** A project's target execution environment (non-prod only in v1). */
+export interface TargetEnvironment {
+  id: string;
+  projectId: string;
+  label: string | null;
+  baseUrl: string;
+  hostAllowlist: string[];
+  isNonProd: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 /** Optional UATR Amendment metadata stamped at results sign-off. */
 export interface UatrSignOffInput {
   version?: string;
