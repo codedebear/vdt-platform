@@ -4,13 +4,17 @@
 import { NextFunction, Request, Response } from 'express';
 import { verifyToken } from '../services/auth.service';
 import { AppError } from './errorHandler';
+import { prisma } from '../config/prisma';
+import type { Role } from '../domain/permissions';
 
 /**
- * Verifies the `Authorization: Bearer <token>` header and attaches the
- * decoded user to `req.user`. Calls `next` with an `AppError(401)` if the
- * token is missing, malformed, or invalid.
+ * Verifies the `Authorization: Bearer <token>` header, then fetches the
+ * user's *current* role from the database so that role changes made by an
+ * admin take effect immediately without waiting for the token to expire.
+ * Attaches the result to `req.user`. Calls `next` with an `AppError(401)`
+ * if the token is missing/invalid or the user no longer exists.
  */
-export function requireAuth(req: Request, _res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const header = req.headers.authorization;
 
   if (!header || !header.startsWith('Bearer ')) {
@@ -22,7 +26,16 @@ export function requireAuth(req: Request, _res: Response, next: NextFunction): v
 
   try {
     const decoded = verifyToken(token);
-    req.user = { id: decoded.sub, email: decoded.email, role: decoded.role };
+    // Fetch fresh role from DB — token role may be stale after an admin role change.
+    const dbUser = await prisma.user.findUnique({
+      where: { id: decoded.sub },
+      select: { role: true },
+    });
+    if (!dbUser) {
+      next(new AppError('User not found', 401));
+      return;
+    }
+    req.user = { id: decoded.sub, email: decoded.email, role: dbUser.role as Role };
     next();
   } catch {
     next(new AppError('Invalid or expired token', 401));

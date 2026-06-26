@@ -10,6 +10,7 @@ import type { PhaseType, Role } from './types';
 /** Discrete operations the UI may offer. Mirrors the backend `Action` union. */
 export type Action =
   | 'PROJECT_CREATE'
+  | 'PROJECT_VIEW'
   | 'PHASE_START'
   | 'PHASE_SUBMIT'
   | 'PHASE_REVIEW'
@@ -45,6 +46,9 @@ export function can(role: Role, action: Action, ctx: PermissionContext = {}): bo
   switch (action) {
     case 'PROJECT_CREATE':
       return role === 'PROJECT_OWNER';
+
+    case 'PROJECT_VIEW':
+      return true;
 
     case 'PHASE_START':
     case 'PHASE_SUBMIT':
