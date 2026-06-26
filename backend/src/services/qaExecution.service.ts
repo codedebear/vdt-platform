@@ -225,6 +225,34 @@ export async function deleteScenario(
   return getTestRun(executionId, actor);
 }
 
+/**
+ * Saves per-run plaintext test data (IMEI, SO numbers, etc.) onto the TestRun.
+ * Only allowed while the run is at COMPILED stage (before execution starts).
+ * Merged with project secrets at worker claim time; run-specific values override.
+ */
+export async function saveRunParams(
+  executionId: string,
+  params: Record<string, string>,
+  actor: Actor,
+) {
+  const execution = await loadWritableQaExecution(executionId, actor);
+  const stage = (execution.testRun?.stage ?? 'SCENARIO_DRAFT') as QaStage;
+  if (stage !== 'COMPILED') {
+    throw new AppError(
+      `Run parameters can only be set at the COMPILED stage (current: ${stage})`,
+      409,
+    );
+  }
+  if (!execution.testRun) {
+    throw new AppError('No QA run found for this execution', 404);
+  }
+  await prisma.testRun.update({
+    where: { id: execution.testRun.id },
+    data: { params },
+  });
+  return getTestRun(executionId, actor);
+}
+
 export async function generateScenarios(
   executionId: string,
   actor: Actor,

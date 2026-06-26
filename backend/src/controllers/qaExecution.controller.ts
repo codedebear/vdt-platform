@@ -131,6 +131,35 @@ export async function deleteScenarioById(
   }
 }
 
+/** PATCH /api/phases/:executionId/qa/params — save per-run plaintext test data. */
+export async function saveRunParams(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const schema = z.object({
+      params: z.record(z.string().min(1), z.string()),
+    });
+    const { params } = schema.parse(req.body ?? {});
+    const testRun = await qaService.saveRunParams(
+      req.params.executionId,
+      params,
+      { id: req.user.id, role: req.user.role },
+    );
+    res.status(200).json({ testRun });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
+      return;
+    }
+    next(err);
+  }
+}
+
 /** POST /api/phases/:executionId/qa/steps/generate — AI-draft steps for the
  * confirmed scenarios (optional `feedback` steers a regeneration). */
 export async function generateSteps(

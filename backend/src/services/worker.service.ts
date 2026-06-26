@@ -100,7 +100,10 @@ export async function claimJob(workerId: string): Promise<ClaimedJob | null> {
     throw new AppError('The run has no target environment configured', 409);
   }
 
-  const secrets = await getDecryptedSecrets(run.execution.projectId);
+  const projectSecrets = await getDecryptedSecrets(run.execution.projectId);
+  // Per-run params (IMEI, SO numbers, etc.) override project-level secrets for the same name.
+  const runParams = (run.params as Record<string, string> | null) ?? {};
+  const secrets = { ...projectSecrets, ...runParams };
   const steps: ClaimedStep[] = run.scenarios.flatMap((s) =>
     s.steps
       .filter((st) => st.artifactSpec != null)

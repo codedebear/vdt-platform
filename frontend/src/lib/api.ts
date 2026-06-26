@@ -296,6 +296,13 @@ export const api = {
       method: 'POST',
     }).then((r) => r.testRun),
 
+  /** Save per-run test data (IMEI, SO numbers, etc.) at the COMPILED stage. */
+  saveRunParams: (executionId: string, params: Record<string, string>) =>
+    request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/params`, {
+      method: 'PATCH',
+      body: { params },
+    }).then((r) => r.testRun),
+
   /** Recompile artifacts (optional feedback), staying at COMPILED. */
   recompileArtifacts: (executionId: string, feedback?: string) =>
     request<{ testRun: TestRun }>(`/api/phases/${executionId}/qa/artifacts/recompile`, {

@@ -238,6 +238,8 @@ export interface TestRun {
   overallResult: ScenarioResult | null;
   startedAt: string | null;
   finishedAt: string | null;
+  /** Per-run plaintext test data (IMEI, SO numbers, etc.) set at COMPILED stage. */
+  params: Record<string, string> | null;
   scenarios: TestScenario[];
 }
 

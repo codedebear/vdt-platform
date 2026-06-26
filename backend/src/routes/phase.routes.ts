@@ -23,6 +23,7 @@ import {
   generateScenarios,
   confirmScenarios,
   deleteScenarioById,
+  saveRunParams,
   generateSteps,
   confirmSteps,
   recompileArtifacts,
@@ -71,6 +72,7 @@ phaseRouter.post('/:executionId/qa/scenarios/confirm', confirmScenarios);
 phaseRouter.delete('/:executionId/qa/scenarios/:scenarioId', deleteScenarioById);
 phaseRouter.post('/:executionId/qa/steps/generate', generateRateLimiter, generateSteps);
 phaseRouter.post('/:executionId/qa/steps/confirm', generateRateLimiter, confirmSteps);
+phaseRouter.patch('/:executionId/qa/params', saveRunParams);
 phaseRouter.post('/:executionId/qa/artifacts/recompile', generateRateLimiter, recompileArtifacts);
 phaseRouter.post('/:executionId/qa/revise', reviseStage);
 phaseRouter.post('/:executionId/qa/run/start', startRun);

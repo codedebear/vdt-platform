@@ -17,7 +17,7 @@
  * budget. Confirming, starting the run, signing off and revising cost nothing.
  * Every successful mutation returns the updated run via onUpdated.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
 import type { QaStage, TestRun, UatrSignOffInput } from '../lib/types';
@@ -53,6 +53,13 @@ const REVISE_TARGETS: { value: QaStage; label: string }[] = [
   { value: 'SCENARIO_DRAFT', label: 'Revise scenarios' },
 ];
 
+/** Extracts unique `${VAR}` placeholder names from compiled step artifacts. */
+function extractPlaceholders(run: import('../lib/types').TestRun): string[] {
+  const json = JSON.stringify(run.scenarios.map((s) => s.steps.map((st) => st.artifactSpec)));
+  const matches = [...json.matchAll(/\$\{([A-Z][A-Z0-9_]*)\}/g)];
+  return [...new Set(matches.map((m) => m[1]))];
+}
+
 export default function QaStageActions({
   executionId,
   testRun,
@@ -71,7 +78,23 @@ export default function QaStageActions({
   const [reviseTarget, setReviseTarget] = useState<QaStage>('COMPILED');
   // Full retest (QAX-8B) confirmation.
   const [retestConfirm, setRetestConfirm] = useState(false);
+  // Run parameters (COMPILED stage test data).
+  const [paramValues, setParamValues] = useState<Record<string, string>>({});
+  const [paramSaving, setParamSaving] = useState(false);
+  const [paramError, setParamError] = useState<string | null>(null);
+  const [paramSaved, setParamSaved] = useState(false);
   const navigate = useNavigate();
+
+  // Sync param inputs from saved testRun.params when the run changes.
+  useEffect(() => {
+    if (testRun?.params) {
+      setParamValues(testRun.params);
+    } else {
+      setParamValues({});
+    }
+    setParamSaved(false);
+    setParamError(null);
+  }, [testRun?.id, testRun?.stage]);
 
   if (!canWork) return null;
 
@@ -329,11 +352,78 @@ export default function QaStageActions({
 
       {/* COMPILED ------------------------------------------------------------ */}
       {stage === 'COMPILED' && (
-        <div className="space-y-3">
+        <div className="space-y-4">
           <p className="text-sm text-slate-600">
-            The steps are compiled into runnable artifacts. Start the run to execute them,
-            or recompile — optionally with feedback to refine the artifacts.
+            The steps are compiled into runnable artifacts. Fill in any test parameters below,
+            then start the run — or recompile with feedback to refine the artifacts.
           </p>
+
+          {/* Run Parameters — auto-detected from compiled ${VAR} placeholders */}
+          {testRun && (() => {
+            const placeholders = extractPlaceholders(testRun);
+            if (placeholders.length === 0) return null;
+            return (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Test Parameters
+                </p>
+                <p className="mb-3 text-xs text-slate-400">
+                  These placeholders were detected in the compiled artifacts. Fill in the values
+                  to use for this run (e.g. IMEI number, SO number). Saved values persist until
+                  you change them.
+                </p>
+                <div className="space-y-2">
+                  {placeholders.map((key) => (
+                    <div key={key} className="flex items-center gap-2">
+                      <label className="w-36 shrink-0 font-mono text-xs text-slate-600">
+                        {`\${${key}}`}
+                      </label>
+                      <input
+                        type="text"
+                        className="flex-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 focus:border-indigo-400 focus:outline-none"
+                        placeholder={`value for ${key}…`}
+                        value={paramValues[key] ?? ''}
+                        disabled={paramSaving}
+                        onChange={(e) =>
+                          setParamValues((prev) => ({ ...prev, [key]: e.target.value }))
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
+                {paramError && <p className="mt-2 text-xs text-rose-500">{paramError}</p>}
+                {paramSaved && !paramError && (
+                  <p className="mt-2 text-xs text-emerald-600">Parameters saved.</p>
+                )}
+                <Button
+                  variant="ghost"
+                  className="mt-2 px-2 py-1 text-xs"
+                  loading={paramSaving}
+                  disabled={busy}
+                  onClick={() => {
+                    setParamSaving(true);
+                    setParamError(null);
+                    setParamSaved(false);
+                    api
+                      .saveRunParams(executionId, paramValues)
+                      .then((run) => {
+                        onUpdated(run);
+                        setParamSaved(true);
+                      })
+                      .catch((err) => {
+                        setParamError(
+                          err instanceof ApiError ? err.message : 'Failed to save parameters',
+                        );
+                      })
+                      .finally(() => setParamSaving(false));
+                  }}
+                >
+                  Save parameters
+                </Button>
+              </div>
+            );
+          })()}
+
           <FeedbackBox value={feedback} onChange={setFeedback} disabled={busy} />
           <div className="flex flex-wrap gap-2">
             <Button

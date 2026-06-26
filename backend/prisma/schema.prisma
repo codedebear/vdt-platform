@@ -159,6 +159,9 @@ model TestRun {
   claimedAt      DateTime?
   claimedBy      String?
   leaseExpiresAt DateTime?
+  // Per-run plaintext test data injected at COMPILED stage (e.g. IMEI, SO numbers).
+  // Merged with project secrets at worker claim time; run-specific values override.
+  params        Json?
   scenarios     TestScenario[]
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
