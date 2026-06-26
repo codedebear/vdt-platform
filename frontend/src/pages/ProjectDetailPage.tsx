@@ -153,6 +153,41 @@ export default function ProjectDetailPage() {
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  // ---- budget edit state ----
+  const [editingBudget, setEditingBudget] = useState(false);
+  const [budgetInput, setBudgetInput] = useState('');
+  const [budgetSaving, setBudgetSaving] = useState(false);
+  const [budgetError, setBudgetError] = useState<string | null>(null);
+
+  const startBudgetEdit = () => {
+    if (!project) return;
+    setBudgetInput(project.budgetUsd != null ? String(project.budgetUsd) : '');
+    setBudgetError(null);
+    setEditingBudget(true);
+  };
+
+  const handleSaveBudget = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!project) return;
+    setBudgetSaving(true);
+    setBudgetError(null);
+    try {
+      const val = budgetInput.trim();
+      const budgetUsd = val === '' ? null : Number(val);
+      if (val !== '' && (isNaN(budgetUsd!) || budgetUsd! < 0)) {
+        setBudgetError('Enter a positive number, or leave blank for unlimited');
+        return;
+      }
+      await api.updateBudget(project.id, budgetUsd);
+      setEditingBudget(false);
+      await load();
+    } catch (err) {
+      setBudgetError(err instanceof ApiError ? err.message : 'Failed to save budget');
+    } finally {
+      setBudgetSaving(false);
+    }
+  };
+
   const handleDelete = async () => {
     if (!project) return;
     setDeleting(true);
@@ -251,6 +286,55 @@ export default function ProjectDetailPage() {
                   Cancel
                 </Button>
               </div>
+            </Card>
+          )}
+
+          {canManage && (
+            <Card className="mb-4 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    AI Budget
+                  </span>
+                  <p className="mt-0.5 text-sm text-slate-700">
+                    <span className="font-medium">${project.spentUsd.toFixed(2)}</span>
+                    <span className="text-slate-400"> spent</span>
+                    {project.budgetUsd != null ? (
+                      <span className="text-slate-500"> / ${project.budgetUsd.toFixed(2)} limit</span>
+                    ) : (
+                      <span className="text-slate-400"> / unlimited</span>
+                    )}
+                  </p>
+                </div>
+                {!editingBudget && (
+                  <Button variant="ghost" className="px-2 py-1 text-xs" onClick={startBudgetEdit}>
+                    Edit limit
+                  </Button>
+                )}
+              </div>
+              {editingBudget && (
+                <form onSubmit={(e) => { void handleSaveBudget(e); }} className="mt-3 flex flex-wrap items-end gap-2">
+                  <div className="flex-1 min-w-40">
+                    <label className="mb-1 block text-xs text-slate-500">
+                      Budget limit (USD) — leave blank for unlimited
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={budgetInput}
+                      onChange={(e) => setBudgetInput(e.target.value)}
+                      placeholder="e.g. 10.00"
+                      className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-800 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
+                    />
+                  </div>
+                  {budgetError && <Alert kind="error">{budgetError}</Alert>}
+                  <div className="flex gap-2">
+                    <Button type="submit" loading={budgetSaving}>Save</Button>
+                    <Button type="button" variant="secondary" onClick={() => setEditingBudget(false)}>Cancel</Button>
+                  </div>
+                </form>
+              )}
             </Card>
           )}
 

@@ -738,7 +738,7 @@ export async function exportUatr(executionId: string, actor: Actor): Promise<Uat
   const execution = await prisma.phaseExecution.findUnique({
     where: { id: executionId },
     include: {
-      project: { select: { name: true } },
+      project: { select: { name: true, ownerId: true } },
       testRun: {
         include: {
           scenarios: {
@@ -755,7 +755,12 @@ export async function exportUatr(executionId: string, actor: Actor): Promise<Uat
   if ((execution.phaseType as PhaseType) !== 'QA') {
     throw new AppError('This is not a QA phase execution', 409);
   }
-  if (!can(actor.role, 'PHASE_SUBMIT', { phaseType: 'QA' })) {
+  const isProjectOwner = execution.project.ownerId === actor.id;
+  if (
+    !can(actor.role, 'PHASE_SUBMIT', { phaseType: 'QA' }) &&
+    actor.role !== 'SUPER_ADMIN' &&
+    !(actor.role === 'PROJECT_OWNER' && isProjectOwner)
+  ) {
     throw new AppError('Your role is not allowed to access this QA report', 403);
   }
   const run = execution.testRun;
@@ -848,7 +853,7 @@ export async function exportUatrPdf(
   const execution = await prisma.phaseExecution.findUnique({
     where: { id: executionId },
     include: {
-      project: { select: { name: true } },
+      project: { select: { name: true, ownerId: true } },
       testRun: {
         include: {
           scenarios: {
@@ -865,7 +870,12 @@ export async function exportUatrPdf(
   if ((execution.phaseType as PhaseType) !== 'QA') {
     throw new AppError('This is not a QA phase execution', 409);
   }
-  if (!can(actor.role, 'PHASE_SUBMIT', { phaseType: 'QA' })) {
+  const isProjectOwner = execution.project.ownerId === actor.id;
+  if (
+    !can(actor.role, 'PHASE_SUBMIT', { phaseType: 'QA' }) &&
+    actor.role !== 'SUPER_ADMIN' &&
+    !(actor.role === 'PROJECT_OWNER' && isProjectOwner)
+  ) {
     throw new AppError('Your role is not allowed to access this QA report', 403);
   }
   const run = execution.testRun;

@@ -178,6 +178,10 @@ export const api = {
   deleteProject: (id: string) =>
     request<void>(`/api/projects/${id}`, { method: 'DELETE' }),
 
+  /** Set or clear (null = unlimited) the project's AI cost budget. */
+  updateBudget: (id: string, budgetUsd: number | null) =>
+    request<Project>(`/api/projects/${id}/budget`, { method: 'PATCH', body: { budgetUsd } }),
+
   /** Start a new run of a phase on a project. */
   startPhase: (projectId: string, input: StartPhaseInput) =>
     request<PhaseExecution>(`/api/projects/${projectId}/phases`, {

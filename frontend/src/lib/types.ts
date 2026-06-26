@@ -69,6 +69,10 @@ export interface Project {
   track: Track;
   status: ProjectStatus;
   ownerId: string;
+  /** Lifetime AI budget cap in USD; null = unlimited. */
+  budgetUsd: number | null;
+  /** Accumulated estimated AI spend in USD. */
+  spentUsd: number;
   createdAt: string;
   updatedAt: string;
 }

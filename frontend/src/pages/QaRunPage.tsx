@@ -91,8 +91,10 @@ export default function QaRunPage() {
 
   const role = user?.role;
   const canWorkQa = Boolean(role && can(role, 'PHASE_SUBMIT', { phaseType: 'QA' }));
+  const canReadReport =
+    canWorkQa || role === 'SUPER_ADMIN' || role === 'PROJECT_OWNER';
   const canExport =
-    canWorkQa && testRun != null && EXPORTABLE_STAGES.includes(testRun.stage);
+    canReadReport && testRun != null && EXPORTABLE_STAGES.includes(testRun.stage);
   // The phase must be in a writable status for the QA run to be mutated.
   const writable =
     phase?.status === 'IN_PROGRESS' || phase?.status === 'CHANGES_REQUESTED';
