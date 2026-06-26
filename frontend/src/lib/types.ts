@@ -93,6 +93,11 @@ export interface CreateProjectInput {
   track: Track;
 }
 
+export interface UpdateProjectInput {
+  name?: string;
+  description?: string | null;
+}
+
 /**
  * Public metadata for a phase-run attachment, as returned by the
  * /api/phases/:id/attachments endpoints. Never includes the file bytes.

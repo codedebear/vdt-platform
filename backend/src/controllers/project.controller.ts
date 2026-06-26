@@ -17,6 +17,11 @@ const updateBudgetSchema = z.object({
   budgetUsd: z.number().nonnegative('Budget must be zero or positive').nullable(),
 });
 
+const updateProjectSchema = z.object({
+  name: z.string().min(1, 'Project name cannot be empty').optional(),
+  description: z.string().nullable().optional(),
+});
+
 /** POST /api/projects — create a project owned by the authenticated user. */
 export async function createProject(
   req: Request,
@@ -62,6 +67,52 @@ export async function getProject(
   try {
     const project = await projectService.getProjectWithNextPhase(req.params.id);
     res.status(200).json(project);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** PATCH /api/projects/:id — update a project's name and/or description. */
+export async function updateProject(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    const data = updateProjectSchema.parse(req.body);
+    const project = await projectService.updateProject(
+      { id: req.user.id, role: req.user.role },
+      req.params.id,
+      data,
+    );
+    res.status(200).json(project);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      next(new AppError(err.errors.map((e) => e.message).join(', '), 422));
+      return;
+    }
+    next(err);
+  }
+}
+
+/** DELETE /api/projects/:id — permanently delete a project and all its data. */
+export async function deleteProject(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    if (!req.user) {
+      throw new AppError('Unauthorized', 401);
+    }
+    await projectService.deleteProject(
+      { id: req.user.id, role: req.user.role },
+      req.params.id,
+    );
+    res.status(204).send();
   } catch (err) {
     next(err);
   }

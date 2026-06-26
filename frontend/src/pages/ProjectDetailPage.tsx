@@ -5,16 +5,19 @@
  * visibility are gated by the viewer's role; the backend re-checks every call.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, ApiError } from '../lib/api';
 import type { ProjectDetail } from '../lib/types';
 import { formatDateTime } from '../lib/format';
 import { can } from '../lib/permissions';
 import { useAuth } from '../auth/AuthContext';
 import {
+  Alert,
+  Button,
   Card,
   PHASE_LABELS,
   ProjectStatusBadge,
+  Textarea,
   TrackBadge,
 } from '../components/ui';
 import { ErrorState, LoadingState } from '../components/PageState';
@@ -105,9 +108,63 @@ export default function ProjectDetailPage() {
     };
   }, [queuedKey, load]);
 
+  const navigate = useNavigate();
   const role = user?.role;
   const isOwner = Boolean(user && project && user.id === project.ownerId);
   const canReview = Boolean(role && can(role, 'PHASE_REVIEW', { isProjectOwner: isOwner }));
+  const canManage = isOwner || role === 'SUPER_ADMIN';
+
+  // ---- inline edit state ----
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  const startEdit = () => {
+    if (!project) return;
+    setEditName(project.name);
+    setEditDesc(project.description ?? '');
+    setEditError(null);
+    setEditing(true);
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!project) return;
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      await api.updateProject(project.id, {
+        name: editName,
+        description: editDesc || null,
+      });
+      setEditing(false);
+      await load();
+    } catch (err) {
+      setEditError(err instanceof ApiError ? err.message : 'Failed to save changes');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
+  // ---- delete confirm state ----
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleDelete = async () => {
+    if (!project) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.deleteProject(project.id);
+      navigate('/projects');
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : 'Failed to delete project');
+      setDeleting(false);
+    }
+  };
 
   return (
     <div>
@@ -120,21 +177,82 @@ export default function ProjectDetailPage() {
 
       {!error && project && role && (
         <>
-          <header className="mt-3 mb-6 flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h1 className="text-2xl font-semibold text-slate-800">{project.name}</h1>
-              {project.description && (
-                <p className="mt-1 max-w-2xl text-sm text-slate-500">{project.description}</p>
-              )}
-              <p className="mt-2 text-xs text-slate-400">
-                Created {formatDateTime(project.createdAt)}
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <TrackBadge track={project.track} />
-              <ProjectStatusBadge status={project.status} />
-            </div>
+          <header className="mt-3 mb-4">
+            {editing ? (
+              <form onSubmit={(e) => { void handleSaveEdit(e); }} className="space-y-3">
+                <input
+                  autoFocus
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-xl font-semibold text-slate-800 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-100"
+                />
+                <Textarea
+                  rows={2}
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  placeholder="Description (optional)"
+                />
+                {editError && <Alert kind="error">{editError}</Alert>}
+                <div className="flex gap-2">
+                  <Button type="submit" loading={editSaving} disabled={!editName.trim()}>
+                    Save
+                  </Button>
+                  <Button type="button" variant="secondary" onClick={() => setEditing(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <h1 className="text-2xl font-semibold text-slate-800">{project.name}</h1>
+                  {project.description && (
+                    <p className="mt-1 max-w-2xl text-sm text-slate-500">{project.description}</p>
+                  )}
+                  <p className="mt-2 text-xs text-slate-400">
+                    Created {formatDateTime(project.createdAt)}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <TrackBadge track={project.track} />
+                  <ProjectStatusBadge status={project.status} />
+                  {canManage && (
+                    <>
+                      <Button variant="ghost" className="px-2 py-1 text-xs" onClick={startEdit}>
+                        Edit
+                      </Button>
+                      <Button
+                        variant="danger"
+                        className="px-2 py-1 text-xs"
+                        onClick={() => { setConfirmDelete(true); setDeleteError(null); }}
+                      >
+                        Delete
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
           </header>
+
+          {confirmDelete && (
+            <Card className="mb-4 border-red-200 bg-red-50 p-4">
+              <p className="mb-3 text-sm text-red-700">
+                This will permanently delete <strong>{project.name}</strong> and all its phase
+                history. This cannot be undone.
+              </p>
+              {deleteError && <Alert kind="error">{deleteError}</Alert>}
+              <div className="mt-3 flex gap-2">
+                <Button variant="danger" loading={deleting} onClick={() => { void handleDelete(); }}>
+                  Confirm Delete
+                </Button>
+                <Button variant="secondary" onClick={() => setConfirmDelete(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </Card>
+          )}
 
           <Card className="mb-6 flex items-center justify-between p-4">
             <span className="text-sm text-slate-500">Next phase</span>

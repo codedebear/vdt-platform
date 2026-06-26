@@ -23,6 +23,7 @@ import type {
   TargetEnvironment,
   TestRun,
   UatrSignOffInput,
+  UpdateProjectInput,
 } from './types';
 
 /** Base URL for API calls; empty string means same-origin relative paths. */
@@ -170,6 +171,12 @@ export const api = {
 
   createProject: (input: CreateProjectInput) =>
     request<Project>('/api/projects', { method: 'POST', body: input }),
+
+  updateProject: (id: string, input: UpdateProjectInput) =>
+    request<Project>(`/api/projects/${id}`, { method: 'PATCH', body: input }),
+
+  deleteProject: (id: string) =>
+    request<void>(`/api/projects/${id}`, { method: 'DELETE' }),
 
   /** Start a new run of a phase on a project. */
   startPhase: (projectId: string, input: StartPhaseInput) =>

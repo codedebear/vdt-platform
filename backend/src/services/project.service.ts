@@ -27,6 +27,12 @@ export interface CreateProjectInput {
   track: Track;
 }
 
+/** Fields accepted when updating a project's metadata. */
+export interface UpdateProjectInput {
+  name?: string;
+  description?: string | null;
+}
+
 /** Creates a new project owned by the given user, seeded with the default budget. */
 export async function createProject(ownerId: string, input: CreateProjectInput) {
   return prisma.project.create({
@@ -64,6 +70,51 @@ export async function updateProjectBudget(
     where: { id: projectId },
     data: { budgetUsd },
   });
+}
+
+/**
+ * Updates a project's name and/or description.
+ * Only the project owner or a SUPER_ADMIN may do this.
+ * @throws {AppError} 404 if not found, 403 if actor is not authorised.
+ */
+export async function updateProject(
+  actor: Actor,
+  projectId: string,
+  input: UpdateProjectInput,
+) {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, ownerId: true },
+  });
+  if (!project) {
+    throw new AppError('Project not found', 404);
+  }
+  if (actor.role !== 'SUPER_ADMIN' && project.ownerId !== actor.id) {
+    throw new AppError('Only the project owner or a super admin may edit this project', 403);
+  }
+  return prisma.project.update({
+    where: { id: projectId },
+    data: input,
+  });
+}
+
+/**
+ * Permanently deletes a project and all its child records (cascade via Prisma schema).
+ * Only the project owner or a SUPER_ADMIN may do this.
+ * @throws {AppError} 404 if not found, 403 if actor is not authorised.
+ */
+export async function deleteProject(actor: Actor, projectId: string) {
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { id: true, ownerId: true },
+  });
+  if (!project) {
+    throw new AppError('Project not found', 404);
+  }
+  if (actor.role !== 'SUPER_ADMIN' && project.ownerId !== actor.id) {
+    throw new AppError('Only the project owner or a super admin may delete this project', 403);
+  }
+  await prisma.project.delete({ where: { id: projectId } });
 }
 
 /** Lists all projects, newest first, with an execution count. */

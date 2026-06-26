@@ -9,6 +9,8 @@ import {
   createProject,
   listProjects,
   getProject,
+  updateProject,
+  deleteProject,
   updateProjectBudget,
 } from '../controllers/project.controller';
 import { startPhase } from '../controllers/phase.controller';
@@ -27,6 +29,9 @@ projectRouter.use(requireAuth);
 projectRouter.post('/', requirePermission('PROJECT_CREATE'), createProject);
 projectRouter.get('/', listProjects);
 projectRouter.get('/:id', getProject);
+// Edit/delete are authorized (owner or SUPER_ADMIN) inside the service layer.
+projectRouter.patch('/:id', updateProject);
+projectRouter.delete('/:id', deleteProject);
 // Budget changes are authorized (owner or SUPER_ADMIN) inside the service layer.
 projectRouter.patch('/:id/budget', updateProjectBudget);
 // Phase start is authorized per phase-type inside the service layer.
